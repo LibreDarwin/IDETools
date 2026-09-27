@@ -1,0 +1,284 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		FE0000000000000000000001 /* xcodebuild.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000011 /* xcodebuild.c */; };
+		FE0000000000000000000002 /* build.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000012 /* build.c */; };
+		FE0000000000000000000003 /* project.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000013 /* project.c */; };
+		FE0000000000000000000004 /* settings.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000014 /* settings.c */; };
+		FE0000000000000000000005 /* ini.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000015 /* ini.c */; };
+		FE0000000000000000000006 /* devpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000016 /* devpath.c */; };
+		FE0000000000000000000007 /* sdkpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000017 /* sdkpath.c */; };
+		FE0000000000000000000008 /* plist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000018 /* plist.c */; };
+		FE0000000000000000000009 /* xmlplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000019 /* xmlplist.c */; };
+		FE000000000000000000000A /* bplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE000000000000000000001A /* bplist.c */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		FE0000000000000000000011 /* xcodebuild.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xcodebuild.c; sourceTree = "<group>"; };
+		FE0000000000000000000012 /* build.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = build.c; sourceTree = "<group>"; };
+		FE0000000000000000000013 /* project.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = project.c; sourceTree = "<group>"; };
+		FE0000000000000000000014 /* settings.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = settings.c; sourceTree = "<group>"; };
+		FE0000000000000000000015 /* ini.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ini.c; sourceTree = "<group>"; };
+		FE0000000000000000000016 /* devpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = devpath.c; sourceTree = "<group>"; };
+		FE0000000000000000000017 /* sdkpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sdkpath.c; sourceTree = "<group>"; };
+		FE0000000000000000000018 /* plist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = plist.c; sourceTree = "<group>"; };
+		FE0000000000000000000019 /* xmlplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xmlplist.c; sourceTree = "<group>"; };
+		FE000000000000000000001A /* bplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bplist.c; sourceTree = "<group>"; };
+		FE000000000000000000001B /* xcodebuild.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = xcodebuild.h; sourceTree = "<group>"; };
+		FE000000000000000000001C /* project.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = project.h; sourceTree = "<group>"; };
+		FE000000000000000000001D /* ini.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ini.h; sourceTree = "<group>"; };
+		FE000000000000000000001E /* devpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = devpath.h; sourceTree = "<group>"; };
+		FE000000000000000000001F /* sdkpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sdkpath.h; sourceTree = "<group>"; };
+		FE0000000000000000000020 /* plist.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.h; sourceTree = "<group>"; };
+		FE0000000000000000000021 /* xcodebuild */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = xcodebuild; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FE0000000000000000000040 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		FE0000000000000000000030 = {
+			isa = PBXGroup;
+			children = (
+				FE0000000000000000000032 /* src */,
+				FE0000000000000000000031 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FE0000000000000000000031 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FE0000000000000000000021 /* xcodebuild */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		FE0000000000000000000032 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				FE0000000000000000000033 /* xcodebuild */,
+				FE0000000000000000000034 /* common */,
+			);
+			path = src;
+			sourceTree = "<group>";
+		};
+		FE0000000000000000000033 /* xcodebuild */ = {
+			isa = PBXGroup;
+			children = (
+				FE0000000000000000000011 /* xcodebuild.c */,
+				FE0000000000000000000012 /* build.c */,
+				FE0000000000000000000013 /* project.c */,
+				FE0000000000000000000014 /* settings.c */,
+				FE0000000000000000000015 /* ini.c */,
+				FE000000000000000000001B /* xcodebuild.h */,
+				FE000000000000000000001C /* project.h */,
+				FE000000000000000000001D /* ini.h */,
+			);
+			path = xcodebuild;
+			sourceTree = "<group>";
+		};
+		FE0000000000000000000034 /* common */ = {
+			isa = PBXGroup;
+			children = (
+				FE0000000000000000000016 /* devpath.c */,
+				FE0000000000000000000017 /* sdkpath.c */,
+				FE0000000000000000000018 /* plist.c */,
+				FE0000000000000000000019 /* xmlplist.c */,
+				FE000000000000000000001A /* bplist.c */,
+				FE000000000000000000001E /* devpath.h */,
+				FE000000000000000000001F /* sdkpath.h */,
+				FE0000000000000000000020 /* plist.h */,
+			);
+			path = common;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FE0000000000000000000050 /* xcodebuild */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FE0000000000000000000081 /* Build configuration list for PBXNativeTarget "xcodebuild" */;
+			buildPhases = (
+				FE0000000000000000000041 /* Sources */,
+				FE0000000000000000000040 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = xcodebuild;
+			productName = xcodebuild;
+			productReference = FE0000000000000000000021 /* xcodebuild */;
+			productType = "com.apple.product-type.tool";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FE0000000000000000000070 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = FE0000000000000000000080 /* Build configuration list for PBXProject "XCBuild" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				base,
+			);
+			mainGroup = FE0000000000000000000030;
+			productRefGroup = FE0000000000000000000031 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FE0000000000000000000050 /* xcodebuild */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FE0000000000000000000041 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FE0000000000000000000001 /* xcodebuild.c in Sources */,
+				FE0000000000000000000002 /* build.c in Sources */,
+				FE0000000000000000000003 /* project.c in Sources */,
+				FE0000000000000000000004 /* settings.c in Sources */,
+				FE0000000000000000000005 /* ini.c in Sources */,
+				FE0000000000000000000006 /* devpath.c in Sources */,
+				FE0000000000000000000007 /* sdkpath.c in Sources */,
+				FE0000000000000000000008 /* plist.c in Sources */,
+				FE0000000000000000000009 /* xmlplist.c in Sources */,
+				FE000000000000000000000A /* bplist.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		FE0000000000000000000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/build/debug";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/src";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				OBJROOT = "$(SRCROOT)/build/obj/debug";
+				SDKROOT = "/Users/sunneva/xnuports-root/devel/xcode-tools/build/release/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.Internal.sdk";
+				SYMROOT = "$(SRCROOT)/build";
+			};
+			name = Debug;
+		};
+		FE0000000000000000000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/build/release";
+				GCC_OPTIMIZATION_LEVEL = 3;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/src";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				OBJROOT = "$(SRCROOT)/build/obj/release";
+				SDKROOT = "/Users/sunneva/xnuports-root/devel/xcode-tools/build/release/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.Internal.sdk";
+				SYMROOT = "$(SRCROOT)/build";
+			};
+			name = Release;
+		};
+		FE0000000000000000000073 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				EXECUTABLE_PREFIX = "";
+				GCC_C_LANGUAGE_STANDARD = c11;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/src/common",
+					"$(SRCROOT)/src/xcodebuild",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				OTHER_CFLAGS = (
+					"-D_DARWIN_C_SOURCE",
+					"-Wall",
+					"-Wextra",
+					"-Wno-unused-parameter",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					"CoreFoundation",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		FE0000000000000000000074 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				EXECUTABLE_PREFIX = "";
+				GCC_C_LANGUAGE_STANDARD = c11;
+				GCC_OPTIMIZATION_LEVEL = 3;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/src/common",
+					"$(SRCROOT)/src/xcodebuild",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				OTHER_CFLAGS = (
+					"-D_DARWIN_C_SOURCE",
+					"-Wall",
+					"-Wextra",
+					"-Wno-unused-parameter",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					"CoreFoundation",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FE0000000000000000000080 /* Build configuration list for PBXProject "XCBuild" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE0000000000000000000071 /* Debug */,
+				FE0000000000000000000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FE0000000000000000000081 /* Build configuration list for PBXNativeTarget "xcodebuild" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE0000000000000000000073 /* Debug */,
+				FE0000000000000000000074 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FE0000000000000000000070 /* Project object */;
+}
