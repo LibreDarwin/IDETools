@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <limits.h>
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -1286,6 +1287,66 @@ static xcodebuild_opts *parse_args(int argc, char **argv)
 }
 
 /* ------------------------------------------------------------------ */
+/* Loader hand-off                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Apple's xcodebuild carries the literal string @rpath/libxcodebuildLoader.dylib
+ * and calls dlopen/dlsym on it; it neither links the loader nor imports
+ * XcodeBuildMain.  This mirrors that.  The run path entry that makes the
+ * @rpath resolve is the same ../../../Frameworks one Apple uses, so a staged
+ * Contents/Developer/usr/bin/xcodebuild finds Contents/Frameworks.
+ *
+ * Everything here is best effort.  The loader is a second product, and a tool
+ * that has not been installed next to its dylib must still build, so a failure
+ * to open it is silent unless the caller asked for verbose output.
+ */
+static void
+loader_preflight(int argc, char **argv, int verbose)
+{
+	static const char *const path = "@rpath/libxcodebuildLoader.dylib";
+	typedef Boolean (*xcode_build_main_fn)(Boolean, CFStringRef, CFStringRef,
+	    CFStringRef, CFStringRef);
+	typedef void (*xcode_build_set_invocation_fn)(int, char * const *);
+	xcode_build_set_invocation_fn set_invocation;
+	xcode_build_main_fn entry;
+	CFStringRef name;
+	CFStringRef bundleID;
+	void *handle;
+
+	handle = dlopen(path, RTLD_LAZY);
+	if (handle == NULL) {
+		if (verbose)
+			fprintf(stderr, "xcodebuild: note: %s not loaded: %s\n", path,
+			    dlerror());
+		return;
+	}
+
+	/*
+	 * The loader needs our argv to replay on relaunch, and it cannot recover
+	 * argv itself, so this must be established before the relaunch is offered.
+	 */
+	set_invocation = (xcode_build_set_invocation_fn)dlsym(handle,
+	    "XcodeBuildSetInvocation");
+	entry = (xcode_build_main_fn)dlsym(handle, "XcodeBuildMain");
+	if (set_invocation == NULL || entry == NULL) {
+		if (verbose)
+			fprintf(stderr, "xcodebuild: note: %s lacks the expected "
+			    "entry points\n", path);
+		dlclose(handle);
+		return;
+	}
+
+	set_invocation(argc, argv);
+
+	name = CFStringCreateWithCString(kCFAllocatorDefault, "xcodebuild",
+	    kCFStringEncodingUTF8);
+	bundleID = CFBundleGetIdentifier(CFBundleGetMainBundle());
+	entry(true, name, bundleID, name, NULL);
+	CFRelease(name);
+}
+
+/* ------------------------------------------------------------------ */
 /* Main dispatch                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -1379,6 +1440,14 @@ int main(int argc, char **argv)
 		xbuild_opts_free(opts);
 		return r;
 	}
+
+	/*
+	 * Offer the AddressSanitizer relaunch only once the tool is committed to
+	 * compiling something.  Re-exec is not free, and a --version or -help
+	 * invocation has nothing to instrument, so those paths above return first.
+	 * On a relaunch this call does not return: the process image is replaced.
+	 */
+	loader_preflight(argc, argv, opts->verbose);
 
 	settings_table *t = resolve_settings(opts, devpath);
 	if (t == NULL) {

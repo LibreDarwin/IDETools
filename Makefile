@@ -51,16 +51,54 @@ DESTDIR ?=
 # DESTDIR is concatenated verbatim, so it must carry its own trailing slash.
 STAGEDIR = $(DESTDIR)$(PREFIX)
 
+# The loader does not live inside the Developer directory.  Apple's layout is
+# Contents/Frameworks/libxcodebuildLoader.dylib, a sibling of
+# Contents/Developer, because the tool under Contents/Developer/usr/bin reaches
+# it as ../../../Frameworks -- which is exactly the third run path Apple's
+# xcodebuild carries.  Installing it as $(PREFIX)/Frameworks would instead give
+# Contents/Developer/Frameworks, off that path, where nothing can load it.
+# PREFIX names Developer, so Contents is its parent; override CONTENTS_DIR
+# directly when staging under a real Xcode.app bundle.
+CONTENTS_DIR     ?= $(PREFIX)/..
+STAGED_CONTENTS  = $(DESTDIR)$(CONTENTS_DIR)
+
 CFLAGS := $(OPT) -std=c11 -D_DARWIN_C_SOURCE -isysroot "$(SDK)" -Wall -Wextra \
 	  -Wno-unused-parameter -I src/common -I src/xcodebuild
 
 # The plist, settings and SDK code all talk to CoreFoundation; nothing else is
 # linked.  xcodebuild resolves its Developer directory at runtime through
 # devpath.c rather than a compiled-in prefix, so the build tree stays
-# relocatable and no rpath is needed here.
+# relocatable and needs no compiled-in prefix run path.
 LFLAGS := -framework CoreFoundation
 
+# The one run path the tool does carry is for the loader, which it dlopen()s as
+# @rpath/libxcodebuildLoader.dylib rather than linking -- Apple's xcodebuild does
+# the same and carries @executable_path/../../../Frameworks for it.  @loader_path
+# comes first so the in-tree build finds the loader as a sibling, and the
+# ../../../Frameworks entry covers a staged Contents/Developer/usr/bin layout.
+XCODEBUILD_RPATH := -Wl,-rpath,@loader_path -Wl,-rpath,@executable_path/../../../Frameworks
+
+# The loader additionally links Foundation, matching Apple's, which declares
+# the same NSString-typed entry points.  Its version is pinned to 1.0.0 for the
+# same reason: Apple's install name carries compatibility/current version 1.0.0
+# and consumers check it.
+LOADER_LFLAGS := $(LFLAGS) -framework Foundation
+LOADER_VERSION := -compatibility_version 1.0.0 -current_version 1.0.0
+
 XCODEBUILD := $(BUILD_DIR)/xcodebuild
+
+# The loader is the second IDETools product: a dylib that owns the entry point
+# so a tool can re-exec itself with DYLD_IMAGE_SUFFIX=_asan and have dyld bind
+# the _asan twins of its own dylibs.  It is C with a CoreFoundation surface, and
+# NSString arguments are CFStringRef by toll-free bridging, so the ABI is the
+# one Apple's Objective-C entry points expose.
+#
+# The tool deliberately does not link it.  Apple's xcodebuild neither links nor
+# imports the loader -- it is dlopen'd, and its run paths exist for
+# DVTSystemPrerequisites -- so linking it here would make the tool refuse to
+# start whenever the loader was not installed alongside it.
+LOADER := $(BUILD_DIR)/libxcodebuildLoader.dylib
+LOADER_OBJS := $(OBJDIR)/xcodebuildLoader.o
 
 # Every object below is reached: the five xcodebuild/ files are the tool
 # itself, and the five common/ files are the SDK/toolchain locator, the
@@ -72,11 +110,20 @@ COMMON_OBJS     := $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o $(OBJDIR)/plist.o \
 
 XCODEBUILD_ALL_OBJS := $(XCODEBUILD_OBJS) $(COMMON_OBJS)
 
-all: $(XCODEBUILD)
+all: $(XCODEBUILD) $(LOADER)
 
 $(XCODEBUILD): $(XCODEBUILD_ALL_OBJS)
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ $(XCODEBUILD_ALL_OBJS) $(LFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(XCODEBUILD_ALL_OBJS) $(LFLAGS) $(XCODEBUILD_RPATH)
+
+$(LOADER): $(LOADER_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -dynamiclib -install_name @rpath/Frameworks/libxcodebuildLoader.dylib \
+	  $(LOADER_VERSION) -o $@ $(LOADER_OBJS) $(LOADER_LFLAGS)
+
+$(OBJDIR)/xcodebuildLoader.o: src/loader/xcodebuildLoader.c src/loader/xcodebuildLoader.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -I src/loader -c -o $@ src/loader/xcodebuildLoader.c
 
 $(OBJDIR)/xcodebuild.o: src/xcodebuild/xcodebuild.c src/xcodebuild/xcodebuild.h \
                        src/common/devpath.h
@@ -129,7 +176,9 @@ install: all
 	  echo "install: DESTDIR must end with '/', got '$(DESTDIR)'" >&2; exit 1 ;; \
 	esac
 	install -d $(STAGEDIR)/usr/bin
+	install -d $(STAGED_CONTENTS)/Frameworks
 	install -m 0755 $(XCODEBUILD) $(STAGEDIR)/usr/bin/xcodebuild
+	install -m 0755 $(LOADER) $(STAGED_CONTENTS)/Frameworks/libxcodebuildLoader.dylib
 
 clean:
 	rm -rf build
