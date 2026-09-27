@@ -133,7 +133,7 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 			};
-			buildConfigurationList = FE0000000000000000000080 /* Build configuration list for PBXProject "XCBuild" */;
+			buildConfigurationList = FE0000000000000000000080 /* Build configuration list for PBXProject "IDETools" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -260,7 +260,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		FE0000000000000000000080 /* Build configuration list for PBXProject "XCBuild" */ = {
+		FE0000000000000000000080 /* Build configuration list for PBXProject "IDETools" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				FE0000000000000000000071 /* Debug */,

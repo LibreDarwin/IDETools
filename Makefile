@@ -1,8 +1,17 @@
 # Copyright (C) 2026, LibreDarwin
 # SPDX-License-Identifier: BSD-3-Clause
-# Open-source reimplementation of Apple's xcodebuild utility, built on the
-# shared LibreDarwin common/ sources (SDK/toolchain discovery and the plist
-# reader) that xcselect owns.
+# Open-source reimplementation of Apple's xcodebuild utility, matching the scope
+# of Apple's IDETools project (PROJECT:IDETools-24902), which builds the real
+# tool at <Xcode>/Contents/Developer/usr/bin/xcodebuild.  Apple's XCBuild
+# project (PROJECT:xcbuild-24900.0.3) is a different thing and is not built
+# here.
+#
+# The tool locates its own Developer directory from its own path and does its
+# own SDK/toolchain discovery via the common/ sources.  That is deliberate:
+# Apple splits the two roles, because /usr/bin/xcodebuild is only a ~500 byte
+# xcselect shim (com.apple.dt.xcode_select.xtool-shim-public) that resolves the
+# Developer dir and execs the real tool.  With no shim in this tree, the tool
+# has to do that work itself.
 #
 # Build layout: every artifact lives under build/; the final tool goes to
 # build/release/ or build/debug/ per CONFIG.
@@ -11,13 +20,9 @@
 # ifeq/ifdef/.if conditionals and no $(if)/$(shell) functions.  Per-config
 # flags come from make/<CONFIG>.mk so both make variants behave identically.
 #
-# xcodebuild is also built by XCBuild.xcodeproj; the two build systems agree
+# xcodebuild is also built by IDETools.xcodeproj; the two build systems agree
 # on where objects and products land, so either one can be used from a clean
 # tree without the other having run.
-#
-# Apple's XCBuild.framework has no source in src/ yet, so nothing here builds
-# it; when it lands it becomes a second product alongside xcodebuild, with its
-# objects in the same $(OBJDIR) and its container under $(BUILD_DIR).
 
 CONFIG ?= release
 SDK    ?= /Users/sunneva/xnuports-root/devel/xcode-tools/build/release/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.Internal.sdk
