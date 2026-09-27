@@ -14,9 +14,6 @@
 		FE0000000000000000000005 /* ini.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000015 /* ini.c */; };
 		FE0000000000000000000006 /* devpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000016 /* devpath.c */; };
 		FE0000000000000000000007 /* sdkpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000017 /* sdkpath.c */; };
-		FE0000000000000000000008 /* plist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000018 /* plist.c */; };
-		FE0000000000000000000009 /* xmlplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000019 /* xmlplist.c */; };
-		FE000000000000000000000A /* bplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE000000000000000000001A /* bplist.c */; };
 		FE000000000000000000000B /* xcodebuildLoader.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000022 /* xcodebuildLoader.c */; };
 /* End PBXBuildFile section */
 
@@ -28,15 +25,11 @@
 		FE0000000000000000000015 /* ini.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ini.c; sourceTree = "<group>"; };
 		FE0000000000000000000016 /* devpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = devpath.c; sourceTree = "<group>"; };
 		FE0000000000000000000017 /* sdkpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sdkpath.c; sourceTree = "<group>"; };
-		FE0000000000000000000018 /* plist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = plist.c; sourceTree = "<group>"; };
-		FE0000000000000000000019 /* xmlplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xmlplist.c; sourceTree = "<group>"; };
-		FE000000000000000000001A /* bplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bplist.c; sourceTree = "<group>"; };
 		FE000000000000000000001B /* xcodebuild.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = xcodebuild.h; sourceTree = "<group>"; };
 		FE000000000000000000001C /* project.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = project.h; sourceTree = "<group>"; };
 		FE000000000000000000001D /* ini.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ini.h; sourceTree = "<group>"; };
 		FE000000000000000000001E /* devpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = devpath.h; sourceTree = "<group>"; };
 		FE000000000000000000001F /* sdkpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sdkpath.h; sourceTree = "<group>"; };
-		FE0000000000000000000020 /* plist.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.h; sourceTree = "<group>"; };
 		FE0000000000000000000021 /* xcodebuild */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = xcodebuild; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE0000000000000000000022 /* xcodebuildLoader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xcodebuildLoader.c; sourceTree = "<group>"; };
 		FE0000000000000000000023 /* xcodebuildLoader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = xcodebuildLoader.h; sourceTree = "<group>"; };
@@ -108,12 +101,8 @@
 			children = (
 				FE0000000000000000000016 /* devpath.c */,
 				FE0000000000000000000017 /* sdkpath.c */,
-				FE0000000000000000000018 /* plist.c */,
-				FE0000000000000000000019 /* xmlplist.c */,
-				FE000000000000000000001A /* bplist.c */,
 				FE000000000000000000001E /* devpath.h */,
 				FE000000000000000000001F /* sdkpath.h */,
-				FE0000000000000000000020 /* plist.h */,
 			);
 			path = common;
 			sourceTree = "<group>";
@@ -202,9 +191,6 @@
 				FE0000000000000000000005 /* ini.c in Sources */,
 				FE0000000000000000000006 /* devpath.c in Sources */,
 				FE0000000000000000000007 /* sdkpath.c in Sources */,
-				FE0000000000000000000008 /* plist.c in Sources */,
-				FE0000000000000000000009 /* xmlplist.c in Sources */,
-				FE000000000000000000000A /* bplist.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

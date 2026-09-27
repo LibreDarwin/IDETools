@@ -13,7 +13,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "plist.h"
+#include <CoreFoundation/CoreFoundation.h>
+
 #include "sdkpath.h"
 
 static int
@@ -463,13 +464,20 @@ xt_foreach_sdk(const char *devdir, xt_sdk_cb cb, void *ctx)
 }
 
 /*
- * Read a plist wholesale.  These files are small -- a few kilobytes at
- * most -- so there is no reason to stream them.
+ * Read a plist wholesale, as a dictionary CoreFoundation owns.
+ *
+ * These files are small -- a few kilobytes at most -- so they are read in
+ * one go.  CFPropertyList recognises the XML and binary dialects alike, so
+ * the same call covers an SDK shipping either one.
+ *
+ * The caller owns the result and releases it with CFRelease().
  */
-static plist_node *
+static CFDictionaryRef
 read_plist(const char *path)
 {
-	plist_node *root;
+	CFDictionaryRef dict;
+	CFDataRef data;
+	CFTypeRef plist;
 	struct stat st;
 	char *text;
 	size_t got;
@@ -477,7 +485,7 @@ read_plist(const char *path)
 
 	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
 		return NULL;
-	if ((fp = fopen(path, "r")) == NULL)
+	if ((fp = fopen(path, "rb")) == NULL)
 		return NULL;
 	if ((text = malloc((size_t)st.st_size + 1)) == NULL) {
 		fclose(fp);
@@ -486,20 +494,88 @@ read_plist(const char *path)
 
 	got = fread(text, 1, (size_t)st.st_size, fp);
 	fclose(fp);
-	text[got] = '\0';
 
-	root = plist_parse_any(text, got);
+	data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)text, (CFIndex)got);
 	free(text);
+	if (data == NULL)
+		return NULL;
 
-	return root;
+	/*
+	 * A property list may be rooted at an array or a string, and every
+	 * caller wants a dictionary to look a key up in.  Refusing anything
+	 * else here keeps the cast honest -- handing an array to
+	 * CFDictionaryGetValue() raises instead of returning NULL.
+	 */
+	plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
+	    kCFPropertyListImmutable, NULL, NULL);
+	CFRelease(data);
+	if (plist == NULL)
+		return NULL;
+
+	if (CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+		CFRelease(plist);
+		return NULL;
+	}
+	dict = (CFDictionaryRef)plist;
+
+	return dict;
+}
+
+/*
+ * The value for one key, or NULL when it is absent.  The key arrives as a
+ * C string rather than a CFString, and CFSTR() only accepts a literal --
+ * it concatenates its argument into a string literal at compile time -- so
+ * the lookup key is built here instead.
+ */
+static CFTypeRef
+dict_value(CFDictionaryRef dict, const char *key)
+{
+	CFStringRef cfkey;
+	CFTypeRef value;
+
+	if (dict == NULL || key == NULL)
+		return NULL;
+	if ((cfkey = CFStringCreateWithCString(kCFAllocatorDefault, key,
+	    kCFStringEncodingUTF8)) == NULL)
+		return NULL;
+
+	value = CFDictionaryGetValue(dict, cfkey);
+	CFRelease(cfkey);
+
+	return value;
+}
+
+/*
+ * A strdup'd C string for one string member, or NULL when the key is
+ * absent or holds something other than a string.
+ */
+static char *
+dict_string(CFDictionaryRef dict, const char *key)
+{
+	CFStringRef value;
+	char buf[PATH_MAX];
+	char *out;
+
+	if ((value = (CFStringRef)dict_value(dict, key)) == NULL)
+		return NULL;
+	if (CFGetTypeID(value) != CFStringGetTypeID())
+		return NULL;
+	if (!CFStringGetCString(value, buf, (CFIndex)sizeof(buf),
+	    kCFStringEncodingUTF8))
+		return NULL;
+
+	if ((out = strdup(buf)) == NULL)
+		return NULL;
+
+	return out;
 }
 
 static char *
 sdk_string(const char *sdkpath, const char *section, const char *key)
 {
 	char path[PATH_MAX];
-	plist_node *root, *dict, *node;
-	char *value = NULL;
+	CFDictionaryRef root, dict;
+	char *value;
 
 	if (sdkpath == NULL || key == NULL)
 		return NULL;
@@ -509,15 +585,17 @@ sdk_string(const char *sdkpath, const char *section, const char *key)
 		return NULL;
 
 	dict = root;
-	if (section != NULL && (dict = plist_dict_get(root, section)) == NULL) {
-		plist_free(root);
-		return NULL;
+	if (section != NULL) {
+		dict = (CFDictionaryRef)dict_value(root, section);
+		if (dict == NULL || CFGetTypeID(dict) != CFDictionaryGetTypeID()) {
+			CFRelease(root);
+			return NULL;
+		}
 	}
 
-	if ((node = plist_dict_get(dict, key)) != NULL && node->string != NULL)
-		value = strdup(node->string);
+	value = dict_string(dict, key);
+	CFRelease(root);
 
-	plist_free(root);
 	return value;
 }
 
@@ -544,8 +622,8 @@ char *
 xt_platform_setting(const char *platformpath, const char *key)
 {
 	char path[PATH_MAX];
-	plist_node *root, *node;
-	char *value = NULL;
+	CFDictionaryRef root;
+	char *value;
 
 	if (platformpath == NULL || key == NULL)
 		return NULL;
@@ -554,10 +632,9 @@ xt_platform_setting(const char *platformpath, const char *key)
 	if ((root = read_plist(path)) == NULL)
 		return NULL;
 
-	if ((node = plist_dict_get(root, key)) != NULL && node->string != NULL)
-		value = strdup(node->string);
+	value = dict_string(root, key);
+	CFRelease(root);
 
-	plist_free(root);
 	return value;
 }
 
@@ -565,8 +642,8 @@ char *
 xt_toolchain_identifier(const char *tcpath)
 {
 	char path[PATH_MAX];
-	plist_node *root, *node;
-	char *value = NULL;
+	CFDictionaryRef root;
+	char *value;
 
 	if (tcpath == NULL)
 		return NULL;
@@ -575,11 +652,9 @@ xt_toolchain_identifier(const char *tcpath)
 	if ((root = read_plist(path)) == NULL)
 		return NULL;
 
-	if ((node = plist_dict_get(root, "Identifier")) != NULL &&
-	    node->string != NULL)
-		value = strdup(node->string);
+	value = dict_string(root, "Identifier");
+	CFRelease(root);
 
-	plist_free(root);
 	return value;
 }
 
@@ -595,8 +670,8 @@ char *
 xt_sdk_build_version(const char *sdkpath)
 {
 	char path[PATH_MAX];
-	plist_node *root, *node;
-	char *value = NULL;
+	CFDictionaryRef root;
+	char *value;
 
 	if (sdkpath == NULL)
 		return NULL;
@@ -606,10 +681,8 @@ xt_sdk_build_version(const char *sdkpath)
 	if ((root = read_plist(path)) == NULL)
 		return NULL;
 
-	if ((node = plist_dict_get(root, "ProductBuildVersion")) != NULL &&
-	    node->string != NULL)
-		value = strdup(node->string);
+	value = dict_string(root, "ProductBuildVersion");
+	CFRelease(root);
 
-	plist_free(root);
 	return value;
 }

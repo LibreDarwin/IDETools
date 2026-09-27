@@ -101,12 +101,12 @@ LOADER := $(BUILD_DIR)/libxcodebuildLoader.dylib
 LOADER_OBJS := $(OBJDIR)/xcodebuildLoader.o
 
 # Every object below is reached: the five xcodebuild/ files are the tool
-# itself, and the five common/ files are the SDK/toolchain locator, the
-# plist reader and the two alternative plist dialects it dispatches to.
+# itself, and the two common/ files are the SDK/toolchain locator and the
+# Developer-dir resolver.  Reading the plists those two consult goes through
+# CoreFoundation, which the tool already links, so there is no parser here.
 XCODEBUILD_OBJS := $(OBJDIR)/xcodebuild.o $(OBJDIR)/build.o $(OBJDIR)/project.o \
 		   $(OBJDIR)/settings.o $(OBJDIR)/ini.o
-COMMON_OBJS     := $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o $(OBJDIR)/plist.o \
-		   $(OBJDIR)/xmlplist.o $(OBJDIR)/bplist.o
+COMMON_OBJS     := $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o
 
 XCODEBUILD_ALL_OBJS := $(XCODEBUILD_OBJS) $(COMMON_OBJS)
 
@@ -136,14 +136,12 @@ $(OBJDIR)/build.o: src/xcodebuild/build.c src/xcodebuild/xcodebuild.h \
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/build.c
 
 $(OBJDIR)/project.o: src/xcodebuild/project.c src/xcodebuild/project.h \
-                     src/xcodebuild/xcodebuild.h src/common/plist.h \
-                     src/common/sdkpath.h
+                     src/xcodebuild/xcodebuild.h src/common/sdkpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/project.c
 
 $(OBJDIR)/settings.o: src/xcodebuild/settings.c src/xcodebuild/xcodebuild.h \
-                      src/xcodebuild/ini.h src/common/plist.h \
-                      src/common/sdkpath.h
+                      src/xcodebuild/ini.h src/common/sdkpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/settings.c
 
@@ -155,21 +153,9 @@ $(OBJDIR)/devpath.o: src/common/devpath.c src/common/devpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/common/devpath.c
 
-$(OBJDIR)/sdkpath.o: src/common/sdkpath.c src/common/sdkpath.h src/common/plist.h
+$(OBJDIR)/sdkpath.o: src/common/sdkpath.c src/common/sdkpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/common/sdkpath.c
-
-$(OBJDIR)/plist.o: src/common/plist.c src/common/plist.h
-	@mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ src/common/plist.c
-
-$(OBJDIR)/xmlplist.o: src/common/xmlplist.c src/common/plist.h
-	@mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ src/common/xmlplist.c
-
-$(OBJDIR)/bplist.o: src/common/bplist.c src/common/plist.h
-	@mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ src/common/bplist.c
 
 install: all
 	@case "$(DESTDIR)" in ""|*/) ;; *) \
