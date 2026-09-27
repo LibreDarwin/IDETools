@@ -30,11 +30,26 @@ CC     := /Users/sunneva/xnuports-root/devel/xcode-tools/build/release/Developer
 
 -include make/$(CONFIG).mk
 
-PREFIX  ?= /usr/local
-DESTDIR ?=
-
 BUILD_DIR := build/$(CONFIG)
 OBJDIR    := $(BUILD_DIR)/obj
+
+# PREFIX names an *absolute* Developer directory, so the tool lands at
+# $(PREFIX)/usr/bin/xcodebuild.  That path is load-bearing, not cosmetic:
+# devpath.c derives the Developer directory by stripping three path components
+# from its own location, so a tool installed as $(PREFIX)/bin/xcodebuild would
+# resolve the Developer directory to $(PREFIX)/.. and find no SDK or toolchain
+# at all.  Install into usr/bin, never bin.
+#
+# PREFIX must be absolute so that DESTDIR staging composes correctly; there is
+# no portable "current directory" variable (GNU make has CURDIR, bmake has
+# .CURDIR) and conditionals are avoided in this Makefile, so the default is
+# spelled out.  For in-tree staging without staging, use:
+#     make install PREFIX=build/release/Developer
+PREFIX  ?= /usr/local/Developer
+DESTDIR ?=
+
+# DESTDIR is concatenated verbatim, so it must carry its own trailing slash.
+STAGEDIR = $(DESTDIR)$(PREFIX)
 
 CFLAGS := $(OPT) -std=c11 -D_DARWIN_C_SOURCE -isysroot "$(SDK)" -Wall -Wextra \
 	  -Wno-unused-parameter -I src/common -I src/xcodebuild
@@ -110,8 +125,11 @@ $(OBJDIR)/bplist.o: src/common/bplist.c src/common/plist.h
 	$(CC) $(CFLAGS) -c -o $@ src/common/bplist.c
 
 install: all
-	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 0755 $(XCODEBUILD) $(DESTDIR)$(PREFIX)/bin/xcodebuild
+	@case "$(DESTDIR)" in ""|*/) ;; *) \
+	  echo "install: DESTDIR must end with '/', got '$(DESTDIR)'" >&2; exit 1 ;; \
+	esac
+	install -d $(STAGEDIR)/usr/bin
+	install -m 0755 $(XCODEBUILD) $(STAGEDIR)/usr/bin/xcodebuild
 
 clean:
 	rm -rf build
