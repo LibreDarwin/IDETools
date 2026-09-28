@@ -620,6 +620,54 @@ is "and it is emitted for a non-macOS platform as well" \
     "$scratch/cb/" \
     "$(setting "$PROJ" METAL_LIBRARY_OUTPUT_DIR CONFIGURATION_BUILD_DIR="$scratch/cb" -sdk iphoneos)"
 
+# Eight fixed install locations and two home-relative ones.  Pinned absolutely,
+# since eight constants that all happen to agree with each other prove nothing.
+is "SYSTEM_APPS_DIR is /Applications" "/Applications" "$(setting "$PROJ" SYSTEM_APPS_DIR)"
+is "LOCAL_DEVELOPER_DIR is /Library/Developer" \
+    "/Library/Developer" "$(setting "$PROJ" LOCAL_DEVELOPER_DIR)"
+is "SYSTEM_DOCUMENTATION_DIR is /Library/Documentation" \
+    "/Library/Documentation" "$(setting "$PROJ" SYSTEM_DOCUMENTATION_DIR)"
+is "SYSTEM_DEMOS_DIR is /Applications/Extras" \
+    "/Applications/Extras" "$(setting "$PROJ" SYSTEM_DEMOS_DIR)"
+
+# The prefixes are not a hierarchy, which is why the table is spelled out.  All
+# three apps-directory keys collide, so a rule mapping LOCAL_ onto SYSTEM_ by
+# dropping or adding a prefix cannot tell them apart.  Pinned absolutely, since
+# "they agree" also holds when the keys are simply absent.
+is "SYSTEM_APPS_DIR and LOCAL_APPS_DIR are both /Applications" \
+    "/Applications /Applications" \
+    "$(setting "$PROJ" SYSTEM_APPS_DIR) $(setting "$PROJ" LOCAL_APPS_DIR)"
+is "both _ADMIN_APPS_DIR spellings are /Applications/Utilities" \
+    "/Applications/Utilities" "$(setting "$PROJ" SYSTEM_ADMIN_APPS_DIR)"
+is "and the local one agrees" \
+    "/Applications/Utilities" "$(setting "$PROJ" LOCAL_ADMIN_APPS_DIR)"
+
+# But the two _LIBRARY_DIR keys are not the same directory, and the pins above
+# are what make this meaningful: with both keys absent they trivially "differ".
+is "SYSTEM_LIBRARY_DIR is /System/Library" \
+    "/System/Library" "$(setting "$PROJ" SYSTEM_LIBRARY_DIR)"
+is "LOCAL_LIBRARY_DIR is /Library, not /System/Library" \
+    "/Library" "$(setting "$PROJ" LOCAL_LIBRARY_DIR)"
+is "the two _LIBRARY_DIR keys are therefore different directories" \
+    "" "$([ "$(setting "$PROJ" LOCAL_LIBRARY_DIR)" = \
+            "$(setting "$PROJ" SYSTEM_LIBRARY_DIR)" ] && echo same)"
+
+# The two USER_ keys hang off the passwd home, not off $HOME.  Apple ignores
+# $HOME for these: run it with HOME pointing at an empty directory and it still
+# reports the real home.  HOME is overridden here so that reading the
+# environment would fail, and the expected value is the tool's own HOME setting
+# -- which is getpwuid's and was already matching Apple -- so the two can only
+# agree if the override did not reach them.
+fakehome="$scratch/fake-home"
+mkdir -p "$fakehome"
+realhome=$(HOME="$fakehome" "$TOOL" -project "$PROJ" -showBuildSettings 2>/dev/null |
+    sed -n 's/^    HOME = //p' | head -1)
+isnt "and the override really was visible to the environment" "$fakehome" "$realhome"
+is "USER_APPS_DIR is under the passwd home" \
+    "$realhome/Applications" "$(HOME="$fakehome" setting "$PROJ" USER_APPS_DIR)"
+is "USER_LIBRARY_DIR is under the passwd home" \
+    "$realhome/Library" "$(HOME="$fakehome" setting "$PROJ" USER_LIBRARY_DIR)"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

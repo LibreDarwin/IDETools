@@ -1037,6 +1037,50 @@ settings_defaults_set(t, "ALWAYS_SEARCH_USER_PATHS", "YES");
 
 		if (pw != NULL && pw->pw_dir != NULL)
 			settings_defaults_set(t, "HOME", pw->pw_dir);
+
+		/*
+		 * Where a Mac installs things, which is eight fixed paths and
+		 * two home-relative ones.  Spelled out rather than derived from
+		 * the prefixes, because the prefixes lie: LOCAL_LIBRARY_DIR is
+		 * /Library while SYSTEM_LIBRARY_DIR is /System/Library, yet
+		 * LOCAL_APPS_DIR and SYSTEM_APPS_DIR are both /Applications and
+		 * both _ADMIN_APPS_DIR keys are both /Applications/Utilities.
+		 * Any rule that maps one prefix onto the other gets half of them
+		 * wrong.  All eight are the same on every platform measured, so
+		 * nothing here is platform-shaped.
+		 */
+		{
+			static const struct { const char *key, *path; } d[] = {
+				{ "LOCAL_ADMIN_APPS_DIR",	"/Applications/Utilities" },
+				{ "LOCAL_APPS_DIR",		"/Applications" },
+				{ "LOCAL_DEVELOPER_DIR",	"/Library/Developer" },
+				{ "LOCAL_LIBRARY_DIR",		"/Library" },
+				{ "SYSTEM_ADMIN_APPS_DIR",	"/Applications/Utilities" },
+				{ "SYSTEM_APPS_DIR",		"/Applications" },
+				{ "SYSTEM_DEMOS_DIR",		"/Applications/Extras" },
+				{ "SYSTEM_DOCUMENTATION_DIR",	"/Library/Documentation" },
+			};
+			size_t i;
+
+			for (i = 0; i < sizeof(d) / sizeof(d[0]); i++)
+				settings_defaults_set(t, d[i].key, d[i].path);
+		}
+
+		/*
+		 * The two home-relative ones, off the same pw_dir as HOME
+		 * rather than off $HOME.  Apple ignores $HOME for these: run it
+		 * with HOME pointing at an empty scratch directory and it still
+		 * reports the real home, so reading the environment here would
+		 * be a divergence introduced by using the obvious source.
+		 */
+		if (pw != NULL && pw->pw_dir != NULL) {
+			char path[PATH_MAX];
+
+			snprintf(path, sizeof(path), "%s/Applications", pw->pw_dir);
+			settings_defaults_set(t, "USER_APPS_DIR", path);
+			snprintf(path, sizeof(path), "%s/Library", pw->pw_dir);
+			settings_defaults_set(t, "USER_LIBRARY_DIR", path);
+		}
 	}
 
 		/* Architectures a build may name, which is wider than the

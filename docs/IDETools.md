@@ -380,6 +380,16 @@ The small, self-contained neighbours worth considering as separate repos later:
    itself. Against `ba8ef6c` the same file fails 17, and against the working
    tree at `8bcd2ce` it fails 13, so it discriminates on each of them.
 
+   The count is also a function of the environment, which is worth knowing before
+   reading a total as coverage. With `DEVELOPER_DIR` unset the suite reports
+   108 passed and 1 skipped; pointed at Xcode it reports 110 and 0 skipped. The
+   two extra assertions are the `TOOLCHAINS` pair, which need a toolchain whose
+   bundle has a `ToolchainInfo.plist`, and CommandLineTools has none. So the
+   suite does not silently lose tests when run bare, but a run without
+   `DEVELOPER_DIR` is two assertions short of a full one, and the skip is the
+   only signal. Counts quoted elsewhere in this file are bare runs unless they
+   say otherwise.
+
 #### Status verdict — 2026-09-28
 
 Re-assessed at `ba8ef6c` (this repo) and `82a443f` (tree), with the duplication
@@ -608,6 +618,30 @@ is not reproduced, because reproducing it requires a platform name that tracks
 macosx would be a suffix derived from a lie, trading one wrong tail for two.
 The default-platform form is emitted and the exception is written down here.
 
+The next group is the ten install locations, and it is the first one where the
+prefixes actively lie. `LOCAL_LIBRARY_DIR` is `/Library` while
+`SYSTEM_LIBRARY_DIR` is `/System/Library` — the two prefixes name different
+directories — yet `LOCAL_APPS_DIR` and `SYSTEM_APPS_DIR` are both
+`/Applications` and both `_ADMIN_APPS_DIR` keys are both
+`/Applications/Utilities`. No rule that maps one prefix onto the other can
+satisfy that, so the table is spelled out and the tests pin both sides
+absolutely. Pinning matters: "these two keys agree" also holds when both keys
+are simply absent, which is exactly what happened when the first version of
+these tests was run against a binary that had not actually been rebuilt.
+
+Eight of the ten are fixed paths, identical on macOS, iOS, tvOS and watchOS, so
+nothing here is platform-shaped. The other two are the trap in this group, and
+the obvious source is the wrong one. `USER_APPS_DIR` and `USER_LIBRARY_DIR` hang
+off the user's home, and the obvious way to spell "home" here is `getenv("HOME")`
+— which is what the surrounding code does when it builds a child process
+environment, and which would have been consistent with it. Apple does not do
+that. Run Apple's `xcodebuild` with `HOME` pointing at an empty scratch
+directory and it still reports the real home. The two keys come off
+`getpwuid(getuid())->pw_dir`, the same source as the `HOME` setting that was
+already matching. The tests override `HOME` and assert the keys stay under the
+passwd home, and separately assert the override was visible to the environment,
+so a `getenv`-based implementation fails rather than passing by accident.
+
 That exception is the visible edge of a much larger gap, and the larger gap is
 the next real item. With `-sdk iphoneos` this tool emits macOS-shaped settings:
 56 differing keys, most of them one omission — there is no platform that tracks
@@ -624,9 +658,9 @@ Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
 | | before | after (project default) | after (`-sdk macosx`) |
 | | --- | --- | --- |
-| only in Apple | 93 | 67 | 64 |
+| only in Apple | 93 | 67 | 54 |
 | shared, differing | 33 | 6 | 0 |
-| shared, matching | 332 | 385 | 420 |
+| shared, matching | 332 | 385 | 430 |
 
 The two columns differ only because of the missing SDK: the default build
 cannot resolve one, so it is the weaker of the two measurements and should not
@@ -810,9 +844,16 @@ With those, the project default's 6 differences are all Apple's fallback, and
 produced by a self-build, and has been withdrawn.** It was measured after a
 build that named a tool which does not exist — the staged tree has no `xcodebuild`
 at its root — and hashed a file the build had not written. The real figure,
-produced by the procedure below, is `197624` bytes, sha256
-`635e5ec974cfdf4249dc9f4f191daabed559a85745f2683f5ee6495fdefd692e`, identical
-across two consecutive passes and identical to the source tree's own build.
+produced by the procedure below, is `197704` bytes, sha256
+`d9fe229164c12fc767c3b10f45d6fef1662db9e2edf278476b6e858d95e7504d`, and it is
+byte-identical across two consecutive passes. It moves whenever the source does,
+so it is a property of the tree rather than a fact about the tool; the figure
+here was recomputed after adding the ten install-location settings, which is why
+it is not the `197624` that the previous commit recorded. An earlier version of
+this paragraph also claimed the result was identical to the source tree's own
+`build/release` binary. That is not reproducible and is not claimed: the tree
+build is `178344` bytes, because it is compiled with different flags by a
+different driver. Only the two-pass equality is asserted.
 
 Three things about that procedure are worth writing down, because each one
 silently produces a plausible wrong answer rather than an error:
@@ -855,7 +896,7 @@ The rest of the gap is systematic, not incidental:
   `.` against `/Users/…/IDETools`, `BUILD_DIR` `./build` against an absolute
   path. Ours also uses `./build/Debug` where Apple uses
   `…/build/…/Release-iphoneos`-style derived directories.
-- **64 settings missing outright** where the SDK resolves, including
+- **54 settings missing outright** where the SDK resolves, including
   `ANDROID_DEPLOYMENT_TARGET`, `CCHROOT`, `LEGACY_DEVELOPER_DIR`,
   `DUMP_DEPENDENCIES_OUTPUT_PATH`, and a family of
   `*_DEPENDENCY_INFO_FILE` / `*_MAP_FILE_PATH` linker settings.
@@ -905,19 +946,26 @@ measurement rather than from reading code:
   paths look plausible. The derivation now requires `usr/bin`, which every real
   Developer directory has and the repository root does not. Fixed in the
   follow-up commit; the two new assertions fail without it.
-- **The 64 settings we still do not emit**, where the SDK resolves. The note here
+- **The 54 settings we still do not emit**, where the SDK resolves. The note here
   used to call the per-arch and per-variant directories the largest group; counted,
-  they are six keys. The largest is the twenty build-directory-rooted file lists,
+  they are six keys. The largest is the twenty-two `SRCROOT`-rooted file lists,
   and it is large precisely because it is *not* one rule — `FILE_LIST`,
   `LD_MAP_FILE_PATH`, `PRECOMP_DESTINATION_DIR`, `REZ_COLLECTOR_DIR` and
-  `PKGINFO_FILE_PATH` share a prefix and nothing else. The two groups that did
+  `PKGINFO_FILE_PATH` share a prefix and nothing else. The three groups that did
   turn out to be one rule each are done: the `OBJROOT` family
   (`COMPOSITE_SDK_DIRS`, `GENERATED_MODULEMAP_DIR`, `SHARED_PRECOMPS_DIR`,
-  `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`) and the two products-directory
-  keys (`SHARED_DERIVED_FILE_DIR`, `METAL_LIBRARY_OUTPUT_DIR`). What is left worth
-  measuring is the ten `SYSTEM_*`/`LOCAL_*`/`USER_*` install locations, which look
-  like the developer-directory family, and the six cache directories, which
-  contain a Xcode version and build hash in the middle of the path.
+  `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`), the two products-directory keys
+  (`SHARED_DERIVED_FILE_DIR`, `METAL_LIBRARY_OUTPUT_DIR`), and the ten
+  `SYSTEM_*`/`LOCAL_*`/`USER_*` install locations. What is left is 54, and the
+  measured shape of it is worth having rather than guessing at: 22 rooted at
+  `SRCROOT`, 8 under the Developer directory (`PLATFORM_DIR`, `TOOLCHAIN_DIR`,
+  the `SDK_DIR_*` pair, the two test search paths), 6 under `/var/folders`, and 18
+  fixed values with no path in them at all. The `SRCROOT` group is the one worth
+  attacking next, but note that none of the 54 are rooted at
+  `CONFIGURATION_BUILD_DIR` — this document used to call them
+  "build-directory-rooted", which is wrong; they are project-rooted. The six
+  cache directories contain an Xcode version and build hash in the middle of the
+  path.
 - **A platform model, which is the thing blocking most of the rest.** Everything
   above is macOS. With `-sdk iphoneos` this tool emits macOS-shaped settings:
   56 differing keys, and nearly all of them trace to one omission — it has no
