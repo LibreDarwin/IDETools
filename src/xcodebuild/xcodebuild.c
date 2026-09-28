@@ -935,7 +935,53 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			{ "DEVELOPER_SDK_DIR",
 			  "/Platforms/MacOSX.platform/Developer/SDKs" },
 			{ "DT_TOOLCHAIN_DIR",
-			  "/Toolchains/XcodeDefault.xctoolchain" }
+			  "/Toolchains/XcodeDefault.xctoolchain" },
+
+			/*
+			 * The same furniture again under two prefixes:
+			 * SYSTEM_DEVELOPER_ and PLATFORM_DEVELOPER_.
+			 * Same directory, so the same tails -- only the
+			 * spelling varies, and not by any rule worth
+			 * relying on, since APPS_DIR and
+			 * APPLICATIONS_DIR are both /Applications and
+			 * TOOLS carries no _DIR at all.  So they are
+			 * spelled out rather than derived.
+			 *
+			 * Apple resolves these against the bundle it was
+			 * launched from and ignores DEVELOPER_DIR
+			 * entirely, even when it names a perfectly good
+			 * developer dir: xcode-select honours the
+			 * variable, xcodebuild does not.  This tree is
+			 * the one building, which is the point of them.
+			 */
+			{ "PLATFORM_DEVELOPER_APPLICATIONS_DIR", "/Applications" },
+			{ "PLATFORM_DEVELOPER_BIN_DIR",          "/usr/bin" },
+			{ "PLATFORM_DEVELOPER_LIBRARY_DIR",      "/Library" },
+			{ "PLATFORM_DEVELOPER_SDK_DIR",
+			  "/Platforms/MacOSX.platform/Developer/SDKs" },
+			{ "PLATFORM_DEVELOPER_TOOLS_DIR",        "/Tools" },
+			{ "PLATFORM_DEVELOPER_USR_DIR",          "/usr" },
+
+			{ "SYSTEM_DEVELOPER_DIR",                "" },
+			{ "SYSTEM_DEVELOPER_APPS_DIR",           "/Applications" },
+			{ "SYSTEM_DEVELOPER_BIN_DIR",            "/usr/bin" },
+			{ "SYSTEM_DEVELOPER_USR_DIR",            "/usr" },
+			{ "SYSTEM_DEVELOPER_TOOLS",              "/Tools" },
+			{ "SYSTEM_DEVELOPER_UTILITIES_DIR",      "/Applications/Utilities" },
+			{ "SYSTEM_DEVELOPER_DEMOS_DIR",
+			  "/Applications/Utilities/Built Examples" },
+			{ "SYSTEM_DEVELOPER_GRAPHICS_TOOLS_DIR",
+			  "/Applications/Graphics Tools" },
+			{ "SYSTEM_DEVELOPER_JAVA_TOOLS_DIR",     "/Applications/Java Tools" },
+			{ "SYSTEM_DEVELOPER_PERFORMANCE_TOOLS_DIR",
+			  "/Applications/Performance Tools" },
+			{ "SYSTEM_DEVELOPER_DOC_DIR",            "/ADC Reference Library" },
+			{ "SYSTEM_DEVELOPER_RELEASENOTES_DIR",
+			  "/ADC Reference Library/releasenotes" },
+			{ "SYSTEM_DEVELOPER_TOOLS_DOC_DIR",
+			  "/ADC Reference Library/documentation/DeveloperTools" },
+			{ "SYSTEM_DEVELOPER_TOOLS_RELEASENOTES_DIR",
+			  "/ADC Reference Library/releasenotes/DeveloperTools" }
 		};
 		char buf[PATH_MAX];
 		size_t i;

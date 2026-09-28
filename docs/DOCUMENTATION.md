@@ -663,11 +663,45 @@ has to be converted to a path before it can be stored, and the conversion needs
 a developer directory, while `SETTING=value` carries its own value. Resolving
 `-sdk` up front is what lets the same downstream name-to-path step serve both.
 
-Both are tested against Apple's binary, and the second is what takes the
-project's comparison from 4 differing settings to 0. The remaining 6 on the
-default build are Apple's own fallback for an SDK that does not exist, not a
-precedence problem; `IDETools.md` records why reproducing them was deliberately
-not attempted.
+Both were measured against Apple's binary; the regression tests assert the
+derived rule against a scratch directory rather than re-running that comparison,
+which needs an Xcode to exist. The second is what takes the project's comparison
+from 4 differing settings to 0. The remaining 6 on the default build are Apple's
+own fallback for an SDK that does not exist, not a precedence problem;
+`IDETools.md` records why reproducing them was deliberately not attempted.
+
+### 6.5 The developer directory's three names, and who chooses it
+
+Apple reports one directory under three prefixes. `DEVELOPER_*` is the
+unprefixed form, and `SYSTEM_DEVELOPER_*` and `PLATFORM_DEVELOPER_*` are the
+same paths again — 20 keys, every one of them the directory plus a fixed tail,
+so they are rows in the table the `DEVELOPER_*` keys already used. The tails are
+spelled out because they do not follow from the names:
+`SYSTEM_DEVELOPER_APPS_DIR` and `PLATFORM_DEVELOPER_APPLICATIONS_DIR` are both
+`/Applications`, `SYSTEM_DEVELOPER_TOOLS` has no `_DIR`, and
+`SYSTEM_DEVELOPER_DIR` is the directory itself with an empty tail.
+
+Which directory is the substantive question, and the two tools answer it
+differently on purpose:
+
+- **Apple resolves against its own bundle and ignores `DEVELOPER_DIR`.** Verified
+  with the variable unset, set to CommandLineTools, set to a staged tree, and
+  set to an APFS clone of Apple's own developer directory — complete, valid, and
+  still ignored. `xcodebuild -version` ignores it too.
+- **`xcode-select -p` honours `DEVELOPER_DIR`**, without validating it: a
+  nonexistent path prints back with exit 0.
+- **We honour it**, and fall back to CommandLineTools when it is unset.
+
+Honouring it is deliberate. The staged self-build this repository is built with
+points `DEVELOPER_DIR` at a tree that is not Xcode, and a tool that ignored the
+variable could not be built against a staged SDK at all. When the variable names
+Apple's own directory — the normal case, since that is what `xcode-select`
+points at — the two agree exactly, which is the 0-differing comparison in
+`IDETools.md`. The cost is the unset case, where the two sides are in different
+directories and 31 keys differ, all of them downstream of that one choice
+(including the four `SDK*` keys, because `-sdk` resolves inside whichever
+directory is in force). The tests therefore take the directory as an argument
+and assert against a scratch one, so a table of Apple's own paths cannot pass.
 
 ---
 

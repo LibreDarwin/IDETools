@@ -479,5 +479,67 @@ else
 fi
 
 echo
+echo "the developer directory's furniture, under Apple's other two prefixes"
+
+# Apple names one directory three ways: DEVELOPER_*, and then
+# SYSTEM_DEVELOPER_* and PLATFORM_DEVELOPER_*.  All three hang off the
+# developer directory in force, so a project asking for one gets the tools
+# that are building it.
+#
+# The expected values are computed from the scratch directory below rather than
+# read off Apple's output, which is the point: the directory is a plain argument
+# here, so a hardcoded Apple path cannot pass.
+devroot="$scratch/FakeDeveloper"
+mkdir -p "$devroot"
+
+is "SYSTEM_DEVELOPER_DIR is the developer directory itself" \
+    "$devroot" "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_DIR)"
+is "PLATFORM_DEVELOPER_SDK_DIR hangs off it" \
+    "$devroot/Platforms/MacOSX.platform/Developer/SDKs" \
+    "$(setting_dev "$devroot" "$PROJ" PLATFORM_DEVELOPER_SDK_DIR)"
+is "SYSTEM_DEVELOPER_BIN_DIR follows the developer directory" \
+    "$devroot/usr/bin" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)"
+
+# The deeply nested ones are where a single missing path segment shows up, and
+# the directory name has a space in it, which is also the parsing risk.
+is "the nested documentation paths follow it" \
+    "$devroot/ADC Reference Library/documentation/DeveloperTools" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_TOOLS_DOC_DIR)"
+is "and the built-examples path, which has two of them" \
+    "$devroot/Applications/Utilities/Built Examples" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_DEMOS_DIR)"
+
+# The spellings do not follow from each other: APPS_DIR and APPLICATIONS_DIR
+# are both /Applications, and SYSTEM_DEVELOPER_TOOLS carries no _DIR at all.  A
+# rule derived from the key name gets the first two wrong.
+is "APPS_DIR is the applications directory" \
+    "$devroot/Applications" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_APPS_DIR)"
+# Pinned absolutely before it is compared to anything: two absent keys agree
+# with each other perfectly, so the equality below says nothing on its own.
+is "PLATFORM_DEVELOPER_APPLICATIONS_DIR is that same directory" \
+    "$devroot/Applications" \
+    "$(setting_dev "$devroot" "$PROJ" PLATFORM_DEVELOPER_APPLICATIONS_DIR)"
+is "and the two spellings agree" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_APPS_DIR)" \
+    "$(setting_dev "$devroot" "$PROJ" PLATFORM_DEVELOPER_APPLICATIONS_DIR)"
+is "SYSTEM_DEVELOPER_TOOLS needs no _DIR to be found" \
+    "$devroot/Tools" \
+    "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_TOOLS)"
+
+# Two developer directories, two answers.  Without this the assertions above
+# would also pass for a table of Apple's own paths, which is the mistake this
+# whole family invites.
+otherroot="$scratch/OtherDeveloper"
+mkdir -p "$otherroot"
+is "a different developer directory gives a different answer" \
+    "$otherroot/usr/bin" \
+    "$(setting_dev "$otherroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)"
+is "and the two do not collide" \
+    "" "$([ "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)" = \
+         "$(setting_dev "$otherroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)" ] && echo same)"
+
+echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
