@@ -481,6 +481,115 @@ static void apply_setting_overrides(settings_table *t,
 }
 
 /*
+ * The build directories, derived from the settings that survive the merge.
+ *
+ * These are seeded with sensible values before the project's settings are
+ * merged, because a project writes its own in terms of them and they have to
+ * expand to something.  But a seed is only a guess: a project is free to put
+ * its intermediates somewhere else, and ours does --
+ * OBJROOT = $(SRCROOT)/build/obj/$(CONFIGURATION) and
+ * CONFIGURATION_BUILD_DIR = $(SRCROOT)/build/release -- so the directories
+ * derived from the seed point at the wrong place and Apple disagrees on
+ * thirteen of them.  Reading the merged values back and deriving again is what
+ * makes OBJROOT authoritative, which is where Apple puts the whole chain.
+ */
+static void derive_build_dirs(settings_table *t)
+{
+	const char *objroot, *symroot, *cfg_build, *config;
+	char proj_dir[PATH_MAX], cfg_dir[PATH_MAX];
+	const char *pname, *tname;
+
+	objroot = settings_get(t, "OBJROOT");
+	if (objroot == NULL || *objroot == '\0')
+		objroot = settings_get(t, "SYMROOT");
+	if (objroot == NULL || *objroot == '\0')
+		return;
+
+	pname = settings_get(t, "PROJECT_NAME");
+	if (pname == NULL || *pname == '\0')
+		pname = "project";
+
+	snprintf(proj_dir, sizeof(proj_dir), "%s/%s.build", objroot, pname);
+	settings_set(t, "PROJECT_TEMP_DIR", proj_dir);
+	settings_set(t, "PROJECT_TEMP_ROOT", objroot);
+	settings_set(t, "TEMP_ROOT", objroot);
+
+	config = settings_get(t, "CONFIGURATION");
+	if (config == NULL || *config == '\0')
+		config = "Release";
+
+	snprintf(cfg_dir, sizeof(cfg_dir), "%s/%s", proj_dir, config);
+	settings_set(t, "CONFIGURATION_TEMP_DIR", cfg_dir);
+
+	/*
+	 * Where the products go.  TARGET_BUILD_DIR follows
+	 * CONFIGURATION_BUILD_DIR, which a project may have pointed
+	 * somewhere else; Apple resolves it the same way, so a project
+	 * that sets one gets both.
+	 */
+	symroot = settings_get(t, "SYMROOT");
+	if (symroot != NULL && *symroot != '\0') {
+		settings_set(t, "BUILD_DIR", symroot);
+		settings_set(t, "BUILD_ROOT", symroot);
+	}
+
+	cfg_build = settings_get(t, "CONFIGURATION_BUILD_DIR");
+	if (cfg_build != NULL && *cfg_build != '\0') {
+		settings_set(t, "BUILT_PRODUCTS_DIR", cfg_build);
+		settings_set(t, "TARGET_BUILD_DIR", cfg_build);
+
+		/*
+		 * These two are seeded from BUILT_PRODUCTS_DIR by
+		 * build_apply_product_settings(), which runs before
+		 * the merge, so they latched the seed.  Their base has
+		 * just moved, so they move with it.
+		 */
+		{
+			const char *full = settings_get(t, "FULL_PRODUCT_NAME");
+			char path[PATH_MAX];
+
+			if (full != NULL && *full != '\0') {
+				snprintf(path, sizeof(path), "%s/%s",
+				    cfg_build, full);
+				settings_set(t, "CODESIGNING_FOLDER_PATH", path);
+			}
+			settings_set(t, "DWARF_DSYM_FOLDER_PATH", cfg_build);
+		}
+	}
+
+	/* A target's own directory, hanging off the configuration's. */
+	tname = settings_get(t, "TARGET_NAME");
+	if (tname != NULL && *tname != '\0') {
+		char tgt[PATH_MAX], sub[PATH_MAX];
+
+		snprintf(tgt, sizeof(tgt), "%s/%s.build", cfg_dir, tname);
+		settings_set(t, "TARGET_TEMP_DIR", tgt);
+		settings_set(t, "TEMP_DIR", tgt);
+		settings_set(t, "TEMP_FILE_DIR", tgt);
+		settings_set(t, "TEMP_FILES_DIR", tgt);
+		settings_set(t, "STRINGSDATA_ROOT", tgt);
+
+		snprintf(sub, sizeof(sub), "%s/Objects", tgt);
+		settings_set(t, "OBJECT_FILE_DIR", sub);
+
+		snprintf(sub, sizeof(sub), "%s/Objects-normal", tgt);
+		settings_set(t, "OBJECT_FILE_DIR_normal", sub);
+		settings_set(t, "STRINGSDATA_DIR", sub);
+
+		snprintf(sub, sizeof(sub), "%s/DerivedSources", tgt);
+		settings_set(t, "DERIVED_FILE_DIR", sub);
+		settings_set(t, "DERIVED_FILES_DIR", sub);
+		settings_set(t, "DERIVED_SOURCES_DIR", sub);
+
+		snprintf(sub, sizeof(sub), "%s/JavaClasses", tgt);
+		settings_set(t, "CLASS_FILE_DIR", sub);
+
+		snprintf(sub, sizeof(sub), "%s/FixedFiles", tgt);
+		settings_set(t, "FIXED_FILES_DIR", sub);
+	}
+}
+
+/*
  * The settings a target builds with.
  *
  * `target` is the target to resolve for, which is normally the one the
@@ -550,13 +659,32 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			settings_set(t, "PROJECT_NAME", pname);
 
 		/*
-		 * Where the project lives.  Paths in its settings
-		 * are written relative to this, and $(SRCROOT)
-		 * appears in them constantly.
+		 * Where the project lives, as an absolute path.
+		 * Paths in its settings are written relative to
+		 * this, and $(SRCROOT) appears in them constantly.
 		 */
 		{
-			if (xc_dirname(project, sr, sizeof(sr)) == NULL)
+			/*
+			 * Absolute, because Apple reports it absolute.
+			 * Every path a project writes as $(SRCROOT)/... is
+			 * expanded against this, and so is the chain of
+			 * build directories below it -- leaving it as "." or
+			 * as the .xcodeproj argument verbatim made all
+			 * 31 of those relative where Apple's are absolute,
+			 * which is the single largest source of differing
+			 * lines in -showBuildSettings.  The path need not
+			 * exist for this: xc_abspath() resolves "."
+			 * and ".." textually rather than touching the
+			 * filesystem, so a build directory that has not
+			 * been created yet still gets a settled name.
+			 */
+			char dir[PATH_MAX];
+
+			if (xc_dirname(project, dir, sizeof(dir)) == NULL ||
+			    xc_abspath(dir, dir, sizeof(dir)) == NULL)
 				snprintf(sr, sizeof(sr), ".");
+			else
+				snprintf(sr, sizeof(sr), "%s", dir);
 			settings_set(t, "SRCROOT", sr);
 			settings_set(t, "SOURCE_ROOT", sr);
 			settings_set(t, "PROJECT_DIR", sr);
@@ -685,49 +813,13 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 		}
 
 		/*
-		 * The target's own directory for intermediates.
-		 * Two targets that each compile a main.c would
-		 * otherwise write the same object, and neither
-		 * could tell its leftovers from the other's.
+		 * Now that the project's own settings are in, settle
+		 * where the intermediates go.  A target's directory is
+		 * per target so that two targets that each compile a
+		 * main.c cannot write the same object, and neither can
+		 * tell its leftovers from the other's.
 		 */
-		{
-			const char *tn = settings_get(t, "TARGET_NAME");
-			const char *ct = settings_get(t,
-			    "CONFIGURATION_TEMP_DIR");
-			char tgt[PATH_MAX], objs[PATH_MAX];
-
-			if (ct != NULL && tn != NULL && *tn != '\0') {
-				snprintf(tgt, sizeof(tgt), "%s/%s.build",
-				         ct, tn);
-				settings_set(t, "TARGET_TEMP_DIR", tgt);
-				settings_set(t, "TEMP_DIR", tgt);
-
-				snprintf(objs, sizeof(objs),
-				         "%s/Objects", tgt);
-				settings_set(t, "OBJECT_FILE_DIR", objs);
-
-				snprintf(objs, sizeof(objs),
-				         "%s/Objects-normal", tgt);
-				settings_set(t, "OBJECT_FILE_DIR_normal",
-				             objs);
-
-				/* The rest of what a target's own
-				   directory holds. */
-				snprintf(objs, sizeof(objs),
-				         "%s/DerivedSources", tgt);
-				settings_set(t, "DERIVED_FILE_DIR", objs);
-				settings_set(t, "DERIVED_FILES_DIR", objs);
-				settings_set(t, "DERIVED_SOURCES_DIR", objs);
-
-				snprintf(objs, sizeof(objs),
-				         "%s/JavaClasses", tgt);
-				settings_set(t, "CLASS_FILE_DIR", objs);
-
-				snprintf(objs, sizeof(objs),
-				         "%s/FixedFiles", tgt);
-				settings_set(t, "FIXED_FILES_DIR", objs);
-			}
-		}
+		derive_build_dirs(t);
 	} else if (project != NULL && opts->verbose) {
 		fprintf(stderr, "xcodebuild: warning: could not parse project '%s'\n", project);
 	}

@@ -374,10 +374,11 @@ The small, self-contained neighbours worth considering as separate repos later:
    decided, and deliberately not acted on.
 7. ❌ `xcindex-test` — recorded, not planned.
 8. ✅ Regression tests in `tests/run.sh`, run by `make test` and `bmake test`.
-   36 assertions over the two bugs above plus the unresolvable-`SDKROOT` case
+   56 assertions over the four bugs above plus the unresolvable-`SDKROOT` case
    they turned up, each checked against the pbxproj, an SDK's own plist, or a
    rule read off Apple rather than against the tool itself. Against `ba8ef6c`
-   the same file fails 17, so it discriminates.
+   the same file fails 17, and against the working tree before these four fixes
+   it fails 10, so it discriminates on each of them.
 
 #### Status verdict — 2026-09-28
 
@@ -388,7 +389,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — 325 differing lines in `-showBuildSettings`; the two outright bugs it exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 87 absent and 11 differing, both counted per key with both tools on the same `DEVELOPER_DIR`; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -464,27 +465,40 @@ and the SDK sync, so the size difference is not build flags either.
 
 Byte-identity is unreachable (§1). Behavioural parity is the substitute goal,
 and it was **assumed** rather than measured. Measuring it on 2026-09-28 against
-Apple's `xcodebuild -showBuildSettings` for this project:
+Apple's `xcodebuild -showBuildSettings` for this project, with both tools
+pointed at the *same* Developer directory (`/Applications/Xcode.app/Contents/
+Developer`) so that the `DEVELOPER_*` settings cannot differ by construction:
 
 ```
-settings emitted   apple 460, ours 418
-  shared            367
-  only in Apple      93
+settings emitted   apple 458, ours 421
+  shared            360
+  only in Apple      87
   only in ours       51
-  shared, differing  43
-  diff lines:       325 of a 465-line output
+  shared, differing  11
 ```
 
 (Count settings, not lines: raw line counts shift by a few depending on how the
 trailing newline is handled, and a strict four-space regex silently drops keys.
 The figures above come from matching `^\s*KEY = value` on either side; they
-reconcile: 93 + 367 = 460 and 51 + 367 = 418.)
+reconcile: 87 + 360 = 447 and 51 + 360 = 411, plus the 11 whose values differ,
+which is 458 and 422 counting each differing key once on the shared side.)
 
-These are the figures *after* the two bugs below were fixed. Before them it was
-ours 419, only-in-ours 52, differing 49, 327 diff lines — the extra setting was
-`GCC_PREPROCESSOR_DEFINITIONS`, which is `DEBUG=1` under Debug and absent under
-Release in both tools, so its disappearance is the configuration fix working,
-not a regression.
+Pointing our tool at a *different* Developer directory than Apple's inflates
+this by 10: `DEVELOPER_DIR` and the nine paths under it are then correctly
+reporting the directory we were given, and Apple is correctly reporting its own.
+Those are not differences, so the matched comparison above is the one to read.
+
+Earlier in the day, before the three fixes below, the matched figures were
+apple-only 93, ours-only 51, differing 33, matching 332. Progress:
+
+| | before | after |
+| --- | --- | --- |
+| only in Apple | 93 | 87 |
+| shared, differing | 33 | 11 |
+| shared, matching | 332 | 360 |
+
+The two outright bugs found earlier in this document were fixed first, which is
+what the "419/52/49" figures below refer to.
 
 The 419-line figure that earlier drafts of this file called "byte-identical to
 Apple" is real, but it is **ours against the tree's** `xcodebuild` — the two
@@ -493,15 +507,18 @@ it as one is what hid this gap. Ours vs the tree re-verified today: 419 lines
 each, byte-identical, same resolved `SDKROOT`, `DEVELOPER_DIR` and
 `PLATFORM_DIR`.
 
-#### Two bugs found and fixed
+#### Bugs found and fixed
 
-Both were found by the measurement above, and both are fixed in the working
-tree:
+The first two were found by the measurement above; the next two by chasing its
+largest families down to a single cause. All four are fixed in the working tree,
+and each has a regression test that fails against the commit before it.
 
 | | was | now | why it mattered |
 | --- | --- | --- | --- |
 | default configuration | `Debug` | `Release` | with no `-configuration`, the same project built differently under the two tools — and worse, *our own* tool disagreed with itself: `-list` reported the project's `defaultConfigurationName` while the build silently used `Debug` |
 | `SDK_VERSION` | `15.4` | `26.5` | the project hardcodes `SDKROOT` to `MacOSX.Internal.sdk`. We honoured `SDKROOT` but derived `SDK_DIR`/`SDK_NAME`/`SDK_VERSION` from the *default* scan (`/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk`), so the build compiled against one SDK while claiming another |
+| source root | `.` | absolute | `SRCROOT` was `xc_dirname()` of the project argument, so a project named relatively — `xcodebuild -project Foo.xcodeproj`, which is how it is normally typed — left the root relative, and the 31 settings derived from it inherited that |
+| intermediates | one level too high | follow `OBJROOT` | the whole build-directory chain was derived from a *seed* written before the project's settings were merged, so a project that moves its intermediates was overruled by our guess |
 
 The configuration fix settles the default from the project's own
 `defaultConfigurationName`, which is what `-list` was already reporting — one
@@ -547,10 +564,72 @@ Verified after the fix: `SDK_DIR`/`SDK_NAME`/`SDK_NAMES`/`SDK_VERSION` and the
 three numbered forms match Apple for the project default and for `SDKROOT=`
 pointed at both `MacOSX26.5.sdk` and `MacOSX15.4.sdk`; an explicit
 `SDK_VERSION=99.1` and `SDK_VERSION_ACTUAL=123` still win; `-list` is unchanged
-against Apple; and the self-build fixed point still holds byte-identically
-(`197448` bytes, sha256 `3e19feaaefd15aa6` for the working tree including the
-`info.ini` and version changes — two consecutive self-builds are the same
-artifact, so the tool compiling itself is a fixed point). The
+against Apple; and the self-build fixed point still holds byte-identically.
+
+##### The source root was not a path
+
+`SRCROOT` came straight from `xc_dirname()` of the project argument, which is
+right for `/abs/Foo.xcodeproj` and wrong for `Foo.xcodeproj`: the latter yields
+`.`, and every `$(SRCROOT)/...` in the project then expanded to a relative path.
+Every one of the 31 settings derived from it came out relative where Apple's are
+absolute, and the emitted command lines inherited that.
+
+The fix is `xc_abspath()` in `xcpath.c`, which resolves `.` and `..` *textually*
+rather than through `realpath(3)`. That distinction matters: a build directory
+that has not been created yet still needs a settled name, and a path that does
+not exist must not fail the tool. Two attempts at the same function got it wrong
+in instructive ways, and both are worth recording because the mistake is easy to
+repeat:
+
+- Writing the leading `/` before the components, then discarding a buffer left
+  empty by a leading `..`, produced `Users/...` with no leading slash at all —
+  a path that looks absolute in a diff and resolves as relative. Every one of
+  31 settings changed at once, which is what made it obvious.
+- Keying the leading `/` on whether the *input* was absolute was wrong for the
+  common case, because the input here is `.` and the result is absolute because
+  `getcwd` was prefixed. The flag has to describe the joined path.
+
+The test that guards this has to name the project *relatively*. Passing the
+absolute path — which is what every other test in the suite does — cannot see the
+defect at all, because the old code was already correct there. That is worth
+stating plainly: a test suite that only ever exercises the convenient form of its
+input will pass against code that is broken in the normal form.
+
+##### The intermediates were derived from a guess
+
+The second half of the family is a different mistake with the same symptom. The
+build directories are seeded before the project's settings are merged, because a
+project writes its own in terms of them (`PRODUCT_NAME = $(TARGET_NAME)`) and
+they have to expand to something. But they were then *left* at the seed: the seed
+set `SYMROOT` and `OBJROOT` to the same directory and derived
+`PROJECT_TEMP_DIR`, `CONFIGURATION_TEMP_DIR` and the target's own directory from
+it, and the merge happened afterwards.
+
+This project overrides both. Its `pbxproj` says
+`OBJROOT = "$(SRCROOT)/build/obj/release"` and
+`CONFIGURATION_BUILD_DIR = "$(SRCROOT)/build/release"`, so the seed was wrong on
+both counts and the whole chain pointed one level too high, with a capitalised
+`build/Release` where the project says `build/release`.
+
+`derive_build_dirs()` now runs after the merge, reads the settled `OBJROOT` and
+`CONFIGURATION_BUILD_DIR` back, and re-derives from them. Two details:
+
+- The seed has to stay. It is what the merge expands against; removing it would
+  break every project that refers to these keys.
+- `CODESIGNING_FOLDER_PATH` and `DWARF_DSYM_FOLDER_PATH` are seeded in
+  `build_apply_product_settings()`, which runs *before* the merge, so they had
+  already latched the guess. They are refreshed in the same place, or they stay
+  wrong while everything around them becomes right.
+
+Together these four fixes took the matched comparison from 33 differing settings
+to 11, and from 332 matching to 360.
+
+##### Fixed point
+
+The self-build fixed point still holds byte-identically: `197576` bytes, sha256
+`38adbd0e5f2f53a3ea0ad635b8ddc2371955f7a88f9b7dda7f92768b0cf7e1ee`, two
+consecutive runs of the same artifact. The earlier `3e19feaaefd15aa6` figure is
+the commit `v0.1.0`; this one is the working tree with these four fixes. The
 `xcodebuild.c` diff is ~190 lines of re-indent because the pbxproj had to be
 parsed before the defaults load, which moved its one level of nesting; `-w` shows
 the real change as 109 lines.
@@ -578,32 +657,42 @@ The rest of the gap is systematic, not incidental:
   `CLANG_WARN_*`).
 
 So the honest status is: **behavioural parity is not met, and the gap is
-measured rather than guessed.** The two bugs that measurement exposed are fixed;
-what remains is systematic. The `-showBuildSettings` surface still accounts for
-325 differing lines, and of Apple's 460 settings, 93 are absent from ours and 43
-more carry a different value — 136 of 460 do not match, before counting the 51
-keys we emit that Apple never does. Certifying parity means diffing
-`-showBuildSettings`, `-list` and the emitted compile/link command lines against
-Apple's binary across a matrix of options and targets, and closing the deltas
-above. Nothing in the fixed-point evidence substitutes for this: a fixed point
-proves self-consistency, and ours agreeing with the tree's tool only shows two
-implementations of the same `sdkpath.c` agree with each other.
+measured rather than guessed.** The two bugs that measurement exposed are fixed,
+and so is the largest single family of differences since; what remains is a long
+tail. Of Apple's 458 settings, 87 are absent from ours and 11 more carry a
+different value — 98 do not match, before counting the 51 keys we emit that Apple
+never does. Certifying parity means diffing `-showBuildSettings`, `-list` and the
+emitted compile/link command lines against Apple's binary across a matrix of
+options and targets, and closing the deltas above. Nothing in the fixed-point
+evidence substitutes for this: a fixed point proves self-consistency, and ours
+agreeing with the tree's tool only shows two implementations of the same
+`sdkpath.c` agree with each other.
 
 The next candidates, in the order they are worth doing, all come from the same
 measurement rather than from reading code:
 
-- **`DEVELOPER_DIR` is `/Library/Developer/CommandLineTools`, Apple says
-  `/Applications/Xcode.app/Contents/Developer`.** Everything derived from it —
-  `DEVELOPER_SDK_DIR`, `DT_TOOLCHAIN_DIR`, `TOOLCHAIN_DIR`, the whole
-  `PLATFORM_DEVELOPER_*` family — differs for this one reason. Ours is not
-  *wrong* about itself, but it resolves the developer directory differently from
-  Apple, and a caller relying on `$(DEVELOPER_DIR)` gets a different answer.
-  This is also why a self-build needs `DEVELOPER_DIR` set explicitly: the
-  CommandLineTools toolchain it resolves to has no `clang` in it, so a build
-  fails at `build.c:3109` before compiling anything.
-- **Relative vs absolute paths** (`SRCROOT`, `PROJECT_DIR`, `BUILD_DIR`), which
-  affect every path in the settings and so every command line derived from them.
-- **`ARCHS_BASE` not narrowed to the host architecture.**
+- **The 11 differing settings**, which are now 11 individual keys rather than
+  families: `ARCHS_BASE` (not narrowed to the host architecture),
+  `DYNAMIC_LIBRARY_EXTENSION`, `RPATH_ORIGIN`, `TOOLCHAINS`,
+  `PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT`, `PLATFORM_REQUIRES_SWIFT_MODULEWRAP`,
+  `PLATFORM_USES_DSYMS`, `TAPI_VERIFY_MODE`, `FRAMEWORK_SEARCH_PATHS`,
+  `HEADER_SEARCH_PATHS`, and `STRINGSDATA_DIR`, which Apple makes per-architecture
+  (`Objects-normal/undefined_arch` where we emit the un-suffixed
+  `Objects-normal`).
+- **The 87 absent settings**, mostly one family of linker and cache paths
+  (`CACHE_ROOT`, `LD_MAP_FILE_PATH`, `CMPILATION_CACHE_CAS_PATH`,
+  `SDK_STAT_CACHE_*`, `SDK_DIR_<name>`) that are per-SDK conveniences rather than
+  87 separate decisions.
+- **The 51 we emit that Apple does not**, which need auditing rather than adding:
+  each one is a claim about Apple's behaviour that has not been checked.
+- **`DEVELOPER_DIR` resolution** when it is unset, where we fall back to
+  CommandLineTools and Apple falls back to `xcode-select`. Comparing the two
+  tools with different `DEVELOPER_DIR` values set inflates the diff by 10 keys
+  that are each individually correct; the fix is to agree on what an unset
+  `DEVELOPER_DIR` means, not to change any of the ten. This is also why a
+  self-build needs `DEVELOPER_DIR` set explicitly: the CommandLineTools
+  toolchain it resolves to has no `clang` in it, so a build fails at
+  `build.c:3109` before compiling anything.
 - **The 93 absent settings**, which are mostly one family of linker
   `*_DEPENDENCY_INFO_FILE` / `*_MAP_FILE_PATH` defaults and the
   `SDK_STAT_CACHE_*` / `SDK_DIR_<name>` per-SDK conveniences rather than 93

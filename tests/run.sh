@@ -13,8 +13,15 @@
 
 set -u
 
-TOOL=${TOOL:-build/release/xcodebuild}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TOOL=${TOOL:-build/release/xcodebuild}
+# Absolute, because a test runs the tool from a directory other than the
+# repository -- and a relative path silently fails to execute there, which
+# looks like a tool that produces no output rather than one that was not found.
+case $TOOL in
+/*) ;;
+*) TOOL=$ROOT/$TOOL ;;
+esac
 PROJ=$ROOT/IDETools.xcodeproj
 
 pass=0
@@ -219,6 +226,139 @@ is "SDK_VERSION_ACTUAL=123 wins over the derived value" \
 # whole reason the overrides are applied a second time rather than just once.
 is "an unrelated override still wins after the sync" \
     custom "$(setting "$PROJ" GCC_OPTIMIZATION_LEVEL GCC_OPTIMIZATION_LEVEL=custom)"
+
+echo
+echo "the source root is absolute"
+
+# Every path in the settings is written as $(SRCROOT)/... and expanded against
+# it, so leaving SRCROOT as "." or as the project argument verbatim made the
+# whole chain of build directories relative -- 31 settings where Apple's are
+# absolute, and one that silently loses the leading '/'.  The expected value is
+# computed from the project file's own location, not read from Apple's output.
+projdir=$(cd "$(dirname "$PROJ")" && pwd -P)
+
+is "SRCROOT is the project's directory, absolute" \
+    "$projdir" "$(setting "$PROJ" SRCROOT)"
+is "SOURCE_ROOT agrees with it" \
+    "$projdir" "$(setting "$PROJ" SOURCE_ROOT)"
+is "PROJECT_DIR agrees with it" \
+    "$projdir" "$(setting "$PROJ" PROJECT_DIR)"
+
+# The leading slash is the part that is easy to lose, and a relative value
+# cannot be caught by a substring test that only looks at the tail.
+is "SRCROOT does not start with a bare Users" \
+    "" "$(setting "$PROJ" SRCROOT | sed -n 's|^Users/|lost: /Users/|p')"
+
+# A project named by an absolute path must report the same root, or the
+# resolution would depend on how the tool happened to be invoked.
+absroot=$(setting "$PROJ" SRCROOT)
+is "invoking by absolute path gives the same root" \
+    "$absroot" "$(setting "$projdir/$(basename "$PROJ")" SRCROOT)"
+
+# This is the case that was actually broken.  Naming the project relatively --
+# "xcodebuild -project Foo.xcodeproj", which is how it is normally typed --
+# leaves xc_dirname() with a bare name or a short relative path, and taking
+# that as the root made every derived setting relative.  Named absolutely the
+# old code was already right, so a test that only ever passes an absolute path
+# cannot see the defect at all.
+relroot=$(cd "$projdir" && "$TOOL" -project "$(basename "$PROJ")" \
+    -showBuildSettings 2>/dev/null | sed -n 's/^    SRCROOT = //p' | head -1)
+is "naming the project relatively still gives an absolute root" \
+    "$absroot" "$relroot"
+
+# And a relative project reached through a ".." path from an unrelated
+# directory, where the naive answer is the caller rather than the project.  The
+# way back to the root is one ".." per component of the scratch path, which is
+# exact and needs no relpath(1) or second interpreter.
+depth=$(/usr/bin/printf '%s' "$scratch" | tr -cd '/' | wc -c | tr -d ' ')
+ups=$(/usr/bin/printf '../%.0s' $(seq 1 "$depth"))
+subroot=$(cd "$scratch" && "$TOOL" \
+    -project "$ups$projdir/$(basename "$PROJ")" -showBuildSettings 2>/dev/null |
+    sed -n 's/^    SRCROOT = //p' | head -1)
+is "a '..' project path resolves to the project, not the caller" \
+    "$absroot" "$subroot"
+
+# And from a different working directory, which is where "./build" used to
+# resolve -- relative to the caller rather than to the project.  The project is
+# named absolutely so that it is the tool's own resolution being tested, not the
+# shell's; the comparison is made outside the subshell because a subshell cannot
+# add to the pass and fail counts.
+othercwd=$(cd / && "$TOOL" -project "$projdir/$(basename "$PROJ")" \
+    -showBuildSettings 2>/dev/null | sed -n 's/^    SRCROOT = //p' | head -1)
+is "invoking from another directory does not change the root" \
+    "$absroot" "$othercwd"
+
+# The chain that hangs off SRCROOT inherits it, so one of them is enough to
+# show the expansion followed.
+is "a derived build directory is absolute too" \
+    "" "$(setting "$PROJ" PROJECT_TEMP_DIR | sed -n 's|^\([A-Za-z]\).*|relative: \1|p')"
+
+echo
+echo "the build directories follow the project's own OBJROOT"
+
+# The tool seeded SYMROOT and OBJROOT with the same directory and derived the
+# intermediates from that seed, before the project's settings were merged.  This
+# project overrides both -- OBJROOT = $(SRCROOT)/build/obj/$(CONFIGURATION) and
+# CONFIGURATION_BUILD_DIR = $(SRCROOT)/build/release -- so every derived
+# directory pointed somewhere Apple did not.  The seed still has to exist, for
+# the merge to expand against; what matters is that the settled values win.
+# Each expectation is built from the values the tool reports, which the pbxproj
+# itself declares, so no Apple is consulted.
+cfg=$(setting "$PROJ" CONFIGURATION)
+objroot=$(setting "$PROJ" OBJROOT)
+symroot=$(setting "$PROJ" SYMROOT)
+cfgbuild=$(setting "$PROJ" CONFIGURATION_BUILD_DIR)
+pname=$(setting "$PROJ" PROJECT_NAME)
+tname=$(setting "$PROJ" TARGET_NAME)
+
+# The project's own declarations, read from the pbxproj: if these stop matching
+# what the tool reports, the project changed and the expectations below are
+# what has to be re-read, not silently re-derived.  Note the project writes
+# OBJROOT as a literal "build/obj/release" while the configuration is named
+# "Release", so the declaration cannot be rebuilt from CONFIGURATION and has to
+# be read.
+is "CONFIGURATION_BUILD_DIR comes from the project" \
+    "$projdir/build/release" "$cfgbuild"
+
+rel_objroot=$(/usr/bin/printf '%s' "$objroot" | sed "s|^$projdir/||")
+declared=
+for s in $(sed -n 's/^[[:space:]]*OBJROOT = "\$(SRCROOT)\/\([^"]*\)";/\1/p' \
+    "$PROJ/project.pbxproj" | sort -u); do
+    if [ "$rel_objroot" = "$s" ]; then
+        declared=$s
+    fi
+done
+is "OBJROOT is one the project declares" \
+    "build/obj/release" "$declared"
+
+# OBJROOT is the base of the whole intermediates chain, and is not the same as
+# SYMROOT -- the seed had them equal, which is what put everything one level
+# too high.
+is "OBJROOT is not SYMROOT" \
+    "" "$([ "$objroot" = "$symroot" ] && echo same)"
+
+is "PROJECT_TEMP_DIR hangs off OBJROOT" \
+    "$objroot/$pname.build" "$(setting "$PROJ" PROJECT_TEMP_DIR)"
+is "CONFIGURATION_TEMP_DIR is the configuration's share" \
+    "$objroot/$pname.build/$cfg" "$(setting "$PROJ" CONFIGURATION_TEMP_DIR)"
+is "TARGET_TEMP_DIR is the target's share" \
+    "$objroot/$pname.build/$cfg/$tname.build" "$(setting "$PROJ" TARGET_TEMP_DIR)"
+is "OBJECT_FILE_DIR is under the target's own directory" \
+    "$objroot/$pname.build/$cfg/$tname.build/Objects" \
+    "$(setting "$PROJ" OBJECT_FILE_DIR)"
+is "DERIVED_FILE_DIR is under it too" \
+    "$objroot/$pname.build/$cfg/$tname.build/DerivedSources" \
+    "$(setting "$PROJ" DERIVED_FILE_DIR)"
+
+# The products follow CONFIGURATION_BUILD_DIR, which the project moved; the
+# capitalised "Release" in the seed is what used to leak through here.
+is "BUILT_PRODUCTS_DIR is where the project said" \
+    "$cfgbuild" "$(setting "$PROJ" BUILT_PRODUCTS_DIR)"
+is "TARGET_BUILD_DIR is where the project said" \
+    "$cfgbuild" "$(setting "$PROJ" TARGET_BUILD_DIR)"
+is "CODESIGNING_FOLDER_PATH follows the products" \
+    "$cfgbuild/$(setting "$PROJ" FULL_PRODUCT_NAME)" \
+    "$(setting "$PROJ" CODESIGNING_FOLDER_PATH)"
 
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

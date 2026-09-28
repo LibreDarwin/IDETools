@@ -28,4 +28,21 @@
  */
 const char *xc_dirname(const char *path, char *buf, size_t len);
 
+/**
+ * @func xc_abspath -- a path made absolute without requiring it to exist
+ * @arg path - the path to resolve
+ * @arg buf - storage for the result
+ * @arg len - size of @arg buf
+ *
+ * Unlike realpath(3), the path need not exist, and "." and ".." are resolved
+ * textually, so a build directory that has not been created yet still gets a
+ * settled name.  A relative path is taken against the current directory; an
+ * absolute one is returned cleaned but otherwise unchanged, so the filesystem
+ * is never consulted and nothing fails for want of a component.
+ *
+ * @return: @arg buf, always NUL-terminated, or NULL if @arg path is NULL,
+ *          @arg buf is NULL, or the result does not fit.
+ */
+const char *xc_abspath(const char *path, char *buf, size_t len);
+
 #endif /* _XCODE_TOOLS_XCPATH_H_ */

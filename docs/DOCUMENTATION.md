@@ -701,7 +701,7 @@ tests/run.sh              regression tests, POSIX sh, no Xcode required
 ```
 
 `make test` (or `bmake test`) builds and then runs `tests/run.sh`, which drives
-the built tool through 36 assertions covering the two bugs this comparison found.
+the built tool through 56 assertions covering the four bugs this comparison found.
 Each expectation is derived from something other than the tool
 under test — the project's own `project.pbxproj`, an SDK's own
 `SDKSettings.plist`, or a rule read off Apple's output — so none of them can pass
