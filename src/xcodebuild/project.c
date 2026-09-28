@@ -542,6 +542,36 @@ CFTypeRef project_find_project_buildsettings(CFTypeRef root,
 	    pget(first, "buildSettings") : NULL;
 }
 
+/*
+ * The configuration a build uses when the command line names none.
+ *
+ * The project's own configuration list says which, and saying so is
+ * worth honouring: a project that defines only Debug means that, and
+ * answering "Release" would name a configuration that is not there.
+ *
+ * Returns NULL when the project says nothing, which is its right to do;
+ * "Release" is then the documented default.  Caller frees nothing: the
+ * result is `buf`.
+ */
+const char *project_default_configuration(CFTypeRef root, char *buf,
+    size_t len)
+{
+	CFTypeRef root_id = NULL;
+	CFTypeRef objects;
+	CFTypeRef project_obj, clist;
+
+	if (root == NULL || buf == NULL || len == 0)
+		return NULL;
+
+	objects = get_objects_dict(root, &root_id);
+	project_obj = pderef(objects, root_id);
+	clist = pderef(objects, pget(project_obj, "buildConfigurationList"));
+	if (clist == NULL)
+		return NULL;
+
+	return pstr(pget(clist, "defaultConfigurationName"), buf, len);
+}
+
 /* The productType of a target: what it builds. */
 void project_target_product_type(CFTypeRef root, const char *target,
     char *buf, size_t len)
@@ -1252,12 +1282,14 @@ int project_list(const char *project, const char *workspace, const xcodebuild_op
 	 * project's to say: its configuration list names one.  Reading it
 	 * matters for a project that defines only Debug, where saying
 	 * "Release" names a configuration that is not there.
+	 *
+	 * This is the same question a build answers, and it asks it
+	 * through project_default_configuration() so that -list and the
+	 * build cannot come to disagree.
 	 */
 	{
-		CFTypeRef cfglist = pderef(objects,
-		    pget(project_obj, "buildConfigurationList"));
-		const char *d = pstr(pget(cfglist, "defaultConfigurationName"),
-		    defbuf, sizeof(defbuf));
+		const char *d = project_default_configuration(root, defbuf,
+		    sizeof(defbuf));
 
 		if (d != NULL && *d != '\0')
 			defcfg = d;

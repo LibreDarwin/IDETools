@@ -57,6 +57,11 @@ CFTypeRef project_find_buildsettings(CFTypeRef root, const char *target,
 CFTypeRef project_find_project_buildsettings(CFTypeRef root,
                                              const char *configuration);
 
+/* The configuration a build uses when none is named on the command line:
+ * the project's defaultConfigurationName, or NULL when it names none. */
+const char *project_default_configuration(CFTypeRef root, char *buf,
+                                          size_t len);
+
 /* The productType of a target (the first, when target is NULL). */
 void project_target_product_type(CFTypeRef root, const char *target,
                                  char *buf, size_t len);

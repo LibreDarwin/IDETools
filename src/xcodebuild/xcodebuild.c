@@ -463,15 +463,40 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 {
 	const char *sdkname = xbuild_resolve_sdk_name(opts, devpath);
 	const char *tcname = xbuild_resolve_toolchain_name(opts, devpath, sdkname);
-	const char *configuration = opts->configuration ? opts->configuration : "Debug";
+	const char *configuration = opts->configuration;
 	const char *arch = opts->arch;
 
 	char *project = (project_override != NULL) ? strdup(project_override) :
 	                detect_project(opts, opts->project_dir);
 
 	settings_table *t = settings_create();
-	if (t == NULL)
+	if (t == NULL) {
+		free(project);
 		return NULL;
+	}
+
+	/*
+	 * Which configuration a build without -configuration uses is the
+	 * project's to say, and this is where it is settled.  It used to
+	 * be answered "Debug" here while -list reported the project's own
+	 * answer, so one tool gave two different defaults for the same
+	 * project and a build without -configuration silently came out
+	 * Debug.  Apple answers Release, which is also the documented
+	 * default, so that stays the fallback here.
+	 *
+	 * It has to happen before the defaults are loaded: the name goes
+	 * into BUILT_PRODUCTS_DIR, the temporary directories and the
+	 * CONFIGURATION setting, all of which are computed from it.
+	 */
+	CFTypeRef root = (project != NULL) ? project_load_pbxproj(project) : NULL;
+	char defcfg[128];
+
+	if (configuration == NULL) {
+		const char *d = (root != NULL) ? project_default_configuration(root,
+		    defcfg, sizeof(defcfg)) : NULL;
+
+		configuration = (d != NULL && *d != '\0') ? d : "Release";
+	}
 
 	if (settings_load_defaults(t, devpath, sdkname, tcname, configuration, arch) != 0)
 		fprintf(stderr, "xcodebuild: warning: could not load SDK info for '%s'\n", sdkname);
@@ -479,208 +504,206 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 	if (target != NULL)
 		settings_set(t, "TARGET_NAME", target);
 
-	if (project != NULL) {
-		CFTypeRef root = project_load_pbxproj(project);
-		if (root != NULL) {
-			char chosen[512], pname[512], sr[PATH_MAX];
+	if (root != NULL) {
+		char chosen[512], pname[512], sr[PATH_MAX];
+
+		/*
+		 * The project's own name, and the name of the
+		 * target the settings come from.  Both are set
+		 * before the merge: the values being merged are
+		 * written in terms of them -- PRODUCT_NAME is
+		 * $(TARGET_NAME) in almost every project -- and
+		 * expand to nothing if they are not there yet.
+		 */
+		project_display_name(project, pname, sizeof(pname));
+		if (pname[0] != '\0')
+			settings_set(t, "PROJECT_NAME", pname);
+
+		/*
+		 * Where the project lives.  Paths in its settings
+		 * are written relative to this, and $(SRCROOT)
+		 * appears in them constantly.
+		 */
+		{
+			if (xc_dirname(project, sr, sizeof(sr)) == NULL)
+				snprintf(sr, sizeof(sr), ".");
+			settings_set(t, "SRCROOT", sr);
+			settings_set(t, "SOURCE_ROOT", sr);
+			settings_set(t, "PROJECT_DIR", sr);
 
 			/*
-			 * The project's own name, and the name of the
-			 * target the settings come from.  Both are set
-			 * before the merge: the values being merged are
-			 * written in terms of them -- PRODUCT_NAME is
-			 * $(TARGET_NAME) in almost every project -- and
-			 * expand to nothing if they are not there yet.
-			 */
-			project_display_name(project, pname, sizeof(pname));
-			if (pname[0] != '\0')
-				settings_set(t, "PROJECT_NAME", pname);
-
-			/*
-			 * Where the project lives.  Paths in its settings
-			 * are written relative to this, and $(SRCROOT)
-			 * appears in them constantly.
+			 * Where the products go.  A project says
+			 * $(BUILT_PRODUCTS_DIR) to find what it has
+			 * just built -- a framework it links against
+			 * above all -- and the settings it merges
+			 * are expanded as they are merged, so this
+			 * has to be known before that happens.
 			 */
 			{
-				if (xc_dirname(project, sr, sizeof(sr)) == NULL)
-					snprintf(sr, sizeof(sr), ".");
-				settings_set(t, "SRCROOT", sr);
-				settings_set(t, "SOURCE_ROOT", sr);
-				settings_set(t, "PROJECT_DIR", sr);
+				char bd[PATH_MAX];
+
+				if (opts->build_root != NULL)
+					snprintf(bd, sizeof(bd), "%s/%s",
+					         opts->build_root,
+					         configuration);
+				else
+					snprintf(bd, sizeof(bd),
+					         "%s/build/%s", sr,
+					         configuration);
+				settings_set(t, "BUILT_PRODUCTS_DIR", bd);
+				settings_set(t, "CONFIGURATION_BUILD_DIR", bd);
+				settings_set(t, "TARGET_BUILD_DIR", bd);
 
 				/*
-				 * Where the products go.  A project says
-				 * $(BUILT_PRODUCTS_DIR) to find what it has
-				 * just built -- a framework it links against
-				 * above all -- and the settings it merges
-				 * are expanded as they are merged, so this
-				 * has to be known before that happens.
+				 * Apple looks for frameworks beside
+				 * the products by default, which is
+				 * how one target finds a framework
+				 * another has just built.
 				 */
 				{
-					char bd[PATH_MAX];
+					const char *fsp = settings_get(t,
+					    "FRAMEWORK_SEARCH_PATHS");
 
-					if (opts->build_root != NULL)
-						snprintf(bd, sizeof(bd), "%s/%s",
-						         opts->build_root,
-						         configuration);
-					else
-						snprintf(bd, sizeof(bd),
-						         "%s/build/%s", sr,
-						         configuration);
-					settings_set(t, "BUILT_PRODUCTS_DIR", bd);
-					settings_set(t, "CONFIGURATION_BUILD_DIR", bd);
-					settings_set(t, "TARGET_BUILD_DIR", bd);
-
-					/*
-					 * Apple looks for frameworks beside
-					 * the products by default, which is
-					 * how one target finds a framework
-					 * another has just built.
-					 */
-					{
-						const char *fsp = settings_get(t,
-						    "FRAMEWORK_SEARCH_PATHS");
-
-						/* Present but empty counts as
-						   unset: the defaults seed
-						   this key with "". */
-						if (fsp == NULL || *fsp == '\0')
-							settings_set(t,
-							    "FRAMEWORK_SEARCH_PATHS",
-							    bd);
-					}
+					/* Present but empty counts as
+					   unset: the defaults seed
+					   this key with "". */
+					if (fsp == NULL || *fsp == '\0')
+						settings_set(t,
+						    "FRAMEWORK_SEARCH_PATHS",
+						    bd);
 				}
-
-				/*
-				 * Where the intermediates go, read back from
-				 * Apple: the products under build/, and
-				 * everything else under a directory per
-				 * project, per configuration and per target.
-				 */
-				{
-					char root_dir[PATH_MAX];
-					char proj_dir[PATH_MAX];
-					char cfg_dir[PATH_MAX];
-
-					if (opts->build_root != NULL)
-						snprintf(root_dir,
-						         sizeof(root_dir), "%s",
-						         opts->build_root);
-					else
-						snprintf(root_dir,
-						         sizeof(root_dir),
-						         "%s/build", sr);
-					settings_set(t, "SYMROOT", root_dir);
-					settings_set(t, "OBJROOT", root_dir);
-
-					snprintf(proj_dir, sizeof(proj_dir),
-					         "%s/%s.build", root_dir,
-					         (pname[0] != '\0') ? pname :
-					         "project");
-					settings_set(t, "PROJECT_TEMP_DIR",
-					             proj_dir);
-
-					snprintf(cfg_dir, sizeof(cfg_dir),
-					         "%s/%s", proj_dir, configuration);
-					settings_set(t, "CONFIGURATION_TEMP_DIR",
-					             cfg_dir);
-
-					settings_set(t, "BUILD_DIR", root_dir);
-					settings_set(t, "BUILD_ROOT", root_dir);
-
-
-					/*
-					 * Where `install` would put things.
-					 * Apple names a directory under /tmp
-					 * after the project, and nothing is
-					 * written there by a plain build.
-					 */
-					{
-						char dst[PATH_MAX];
-
-						snprintf(dst, sizeof(dst),
-						         "/tmp/%s.dst",
-						         (pname[0] != '\0') ?
-						         pname : "project");
-						settings_set(t, "DSTROOT", dst);
-						settings_set(t, "INSTALL_ROOT", dst);
-					}
-				}
-			}
-
-			/* Project settings first; a target's inherit them. */
-			settings_merge_plist_dict(t,
-			    project_find_project_buildsettings(root, configuration));
-
-			CFTypeRef bs = project_find_buildsettings(root,
-			    target, configuration, chosen, sizeof(chosen));
-
-			if (target == NULL && chosen[0] != '\0')
-				settings_set(t, "TARGET_NAME", chosen);
-
-			if (bs != NULL)
-				settings_merge_plist_dict(t, bs);
-
-			{
-				char pt[128];
-
-				project_target_product_type(root,
-				    (target != NULL) ? target :
-				    (chosen[0] != '\0' ? chosen : NULL),
-				    pt, sizeof(pt));
-				build_apply_product_settings(t, pt);
 			}
 
 			/*
-			 * The target's own directory for intermediates.
-			 * Two targets that each compile a main.c would
-			 * otherwise write the same object, and neither
-			 * could tell its leftovers from the other's.
+			 * Where the intermediates go, read back from
+			 * Apple: the products under build/, and
+			 * everything else under a directory per
+			 * project, per configuration and per target.
 			 */
 			{
-				const char *tn = settings_get(t, "TARGET_NAME");
-				const char *ct = settings_get(t,
-				    "CONFIGURATION_TEMP_DIR");
-				char tgt[PATH_MAX], objs[PATH_MAX];
+				char root_dir[PATH_MAX];
+				char proj_dir[PATH_MAX];
+				char cfg_dir[PATH_MAX];
 
-				if (ct != NULL && tn != NULL && *tn != '\0') {
-					snprintf(tgt, sizeof(tgt), "%s/%s.build",
-					         ct, tn);
-					settings_set(t, "TARGET_TEMP_DIR", tgt);
-					settings_set(t, "TEMP_DIR", tgt);
+				if (opts->build_root != NULL)
+					snprintf(root_dir,
+					         sizeof(root_dir), "%s",
+					         opts->build_root);
+				else
+					snprintf(root_dir,
+					         sizeof(root_dir),
+					         "%s/build", sr);
+				settings_set(t, "SYMROOT", root_dir);
+				settings_set(t, "OBJROOT", root_dir);
 
-					snprintf(objs, sizeof(objs),
-					         "%s/Objects", tgt);
-					settings_set(t, "OBJECT_FILE_DIR", objs);
+				snprintf(proj_dir, sizeof(proj_dir),
+				         "%s/%s.build", root_dir,
+				         (pname[0] != '\0') ? pname :
+				         "project");
+				settings_set(t, "PROJECT_TEMP_DIR",
+				             proj_dir);
 
-					snprintf(objs, sizeof(objs),
-					         "%s/Objects-normal", tgt);
-					settings_set(t, "OBJECT_FILE_DIR_normal",
-					             objs);
+				snprintf(cfg_dir, sizeof(cfg_dir),
+				         "%s/%s", proj_dir, configuration);
+				settings_set(t, "CONFIGURATION_TEMP_DIR",
+				             cfg_dir);
 
-					/* The rest of what a target's own
-					   directory holds. */
-					snprintf(objs, sizeof(objs),
-					         "%s/DerivedSources", tgt);
-					settings_set(t, "DERIVED_FILE_DIR", objs);
-					settings_set(t, "DERIVED_FILES_DIR", objs);
-					settings_set(t, "DERIVED_SOURCES_DIR", objs);
+				settings_set(t, "BUILD_DIR", root_dir);
+				settings_set(t, "BUILD_ROOT", root_dir);
 
-					snprintf(objs, sizeof(objs),
-					         "%s/JavaClasses", tgt);
-					settings_set(t, "CLASS_FILE_DIR", objs);
 
-					snprintf(objs, sizeof(objs),
-					         "%s/FixedFiles", tgt);
-					settings_set(t, "FIXED_FILES_DIR", objs);
+				/*
+				 * Where `install` would put things.
+				 * Apple names a directory under /tmp
+				 * after the project, and nothing is
+				 * written there by a plain build.
+				 */
+				{
+					char dst[PATH_MAX];
+
+					snprintf(dst, sizeof(dst),
+					         "/tmp/%s.dst",
+					         (pname[0] != '\0') ?
+					         pname : "project");
+					settings_set(t, "DSTROOT", dst);
+					settings_set(t, "INSTALL_ROOT", dst);
 				}
 			}
-
-			CFRelease(root);
-		} else if (opts->verbose) {
-			fprintf(stderr, "xcodebuild: warning: could not parse project '%s'\n", project);
 		}
+
+		/* Project settings first; a target's inherit them. */
+		settings_merge_plist_dict(t,
+		    project_find_project_buildsettings(root, configuration));
+
+		CFTypeRef bs = project_find_buildsettings(root,
+		    target, configuration, chosen, sizeof(chosen));
+
+		if (target == NULL && chosen[0] != '\0')
+			settings_set(t, "TARGET_NAME", chosen);
+
+		if (bs != NULL)
+			settings_merge_plist_dict(t, bs);
+
+		{
+			char pt[128];
+
+			project_target_product_type(root,
+			    (target != NULL) ? target :
+			    (chosen[0] != '\0' ? chosen : NULL),
+			    pt, sizeof(pt));
+			build_apply_product_settings(t, pt);
+		}
+
+		/*
+		 * The target's own directory for intermediates.
+		 * Two targets that each compile a main.c would
+		 * otherwise write the same object, and neither
+		 * could tell its leftovers from the other's.
+		 */
+		{
+			const char *tn = settings_get(t, "TARGET_NAME");
+			const char *ct = settings_get(t,
+			    "CONFIGURATION_TEMP_DIR");
+			char tgt[PATH_MAX], objs[PATH_MAX];
+
+			if (ct != NULL && tn != NULL && *tn != '\0') {
+				snprintf(tgt, sizeof(tgt), "%s/%s.build",
+				         ct, tn);
+				settings_set(t, "TARGET_TEMP_DIR", tgt);
+				settings_set(t, "TEMP_DIR", tgt);
+
+				snprintf(objs, sizeof(objs),
+				         "%s/Objects", tgt);
+				settings_set(t, "OBJECT_FILE_DIR", objs);
+
+				snprintf(objs, sizeof(objs),
+				         "%s/Objects-normal", tgt);
+				settings_set(t, "OBJECT_FILE_DIR_normal",
+				             objs);
+
+				/* The rest of what a target's own
+				   directory holds. */
+				snprintf(objs, sizeof(objs),
+				         "%s/DerivedSources", tgt);
+				settings_set(t, "DERIVED_FILE_DIR", objs);
+				settings_set(t, "DERIVED_FILES_DIR", objs);
+				settings_set(t, "DERIVED_SOURCES_DIR", objs);
+
+				snprintf(objs, sizeof(objs),
+				         "%s/JavaClasses", tgt);
+				settings_set(t, "CLASS_FILE_DIR", objs);
+
+				snprintf(objs, sizeof(objs),
+				         "%s/FixedFiles", tgt);
+				settings_set(t, "FIXED_FILES_DIR", objs);
+			}
+		}
+	} else if (project != NULL && opts->verbose) {
+		fprintf(stderr, "xcodebuild: warning: could not parse project '%s'\n", project);
 	}
+
+	if (root != NULL)
+		CFRelease(root);
 	free(project);
 
 	if (opts->xcconfig != NULL) {
