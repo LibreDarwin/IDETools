@@ -42,6 +42,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <limits.h>
+#include <pwd.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -1050,6 +1051,135 @@ static void md5_hex(const void *data, size_t len, char *out /* 33 bytes */)
 }
 
 /*
+ * Nine keys that all answer one question: what is this thing called.
+ *
+ * They are one group because they are all read off two things the project
+ * already states -- its own filename and its target's productType -- and
+ * because four of the nine are just those two things renamed.  Verified
+ * against Apple for both of this project's targets, a tool and a dynamic
+ * library, which is two data points and is called out below.
+ *
+ * The one that looks like a hash of nothing is PROJECT_GUID, and it is a hash
+ * of very little: the MD5 of the project's *filename*, extension included.  Not
+ * its contents, and not its directory -- measured both ways, by copying the
+ * project under a different name (a different GUID) and by reaching the same
+ * file through a symlink (the same one).  The filename is canonicalized first,
+ * so a symlink named Alias.xcodeproj pointing at IDETools.xcodeproj still
+ * reports the GUID of IDETools.xcodeproj; taking the basename of the path as
+ * typed gets that wrong, and it is the kind of wrong that only shows up when
+ * somebody reaches the project through a symlink.
+ *
+ * Two of the nine are consumed-but-not-reported dependencies of others.
+ * VERSION_INFO_FILE is named after $(PRODUCT_NAME), not $(TARGET_NAME), which
+ * for a target that renames its product is a different string; and
+ * VERSION_INFO_STRING ends in $(CURRENT_PROJECT_VERSION), which Apple
+ * interpolates into it and does not itself report for a target that sets none
+ * -- so the version-less form has a trailing hyphen and nothing after it,
+ * which looks like a typo and is not.
+ *
+ * The two productType-dependent keys are a table of two, and that is the
+ * whole table as far as it has been measured.  A productType not in it emits
+ * neither key rather than a guess: PACKAGE_TYPE and STRIP_STYLE are both
+ * wrong-looking values, and a project with a different product type is
+ * exactly the case where being confidently wrong is most expensive.
+ */
+static void derive_identity(settings_table *t, CFTypeRef root,
+    const char *project, const char *target)
+{
+	static const struct {
+		const char *product_type;
+		const char *package_type;
+		const char *strip_style;
+	} kinds[] = {
+		{ "com.apple.product-type.tool",
+		  "com.apple.package-type.mach-o-executable",	"all" },
+		{ "com.apple.product-type.library.dynamic",
+		  "com.apple.package-type.mach-o-dylib",		"debugging" },
+	};
+	char resolved[PATH_MAX], name[PATH_MAX], guid[33], ptype[256];
+	const char *pname, *tname, *product, *cver, *slash;
+	struct passwd *pw;
+	size_t i;
+
+	if (root == NULL || project == NULL)
+		return;
+
+	/*
+	 * The two names.  Both are read out of the table rather than
+	 * recomputed, so a project that renames itself or its target gets
+	 * the renamed pair here too.
+	 */
+	pname = settings_get(t, "PROJECT_NAME");
+	tname = settings_get(t, "TARGET_NAME");
+	if (pname != NULL && *pname != '\0')
+		settings_defaults_set(t, "PROJECT", pname);
+	if (tname != NULL && *tname != '\0')
+		settings_defaults_set(t, "TARGETNAME", tname);
+
+	/*
+	 * The GUID, from the canonical filename.  realpath() rather than the
+	 * path as typed, because Apple resolves the symlink first.
+	 */
+	if (realpath(project, resolved) != NULL &&
+	    (slash = strrchr(resolved, '/')) != NULL && slash[1] != '\0') {
+		snprintf(name, sizeof(name), "%s", slash + 1);
+		md5_hex(name, strlen(name), guid);
+		settings_defaults_set(t, "PROJECT_GUID", guid);
+	}
+
+	/*
+	 * What it builds, and how that product is stripped.  The target
+	 * comes out of the table rather than off the command line, so that
+	 * these two describe the same target as the rest of the settings:
+	 * with no -target the table holds the selected default, while a
+	 * NULL target would send the lookup to the first target in the
+	 * project's own order, which is not necessarily the same one.
+	 */
+	project_target_product_type(root,
+	    (tname != NULL && *tname != '\0') ? tname : target, ptype,
+	    sizeof(ptype));
+	for (i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+		if (strcmp(ptype, kinds[i].product_type) != 0)
+			continue;
+		settings_defaults_set(t, "PACKAGE_TYPE", kinds[i].package_type);
+		settings_defaults_set(t, "STRIP_STYLE", kinds[i].strip_style);
+		break;
+	}
+
+	/* The version-info file, named after the product. */
+	product = settings_get(t, "PRODUCT_NAME");
+	if (product != NULL && *product != '\0') {
+		char vfile[PATH_MAX];
+
+		snprintf(vfile, sizeof(vfile), "%s_vers.c", product);
+		settings_defaults_set(t, "VERSION_INFO_FILE", vfile);
+	}
+
+	/*
+	 * Who built it: the login name from the password database, which is
+	 * not $USER.  With USER set to something else, and with it unset
+	 * entirely, Apple still reports the account name.
+	 */
+	pw = getpwuid(getuid());
+	if (pw != NULL && pw->pw_name != NULL && *pw->pw_name != '\0')
+		settings_defaults_set(t, "VERSION_INFO_BUILDER", pw->pw_name);
+
+	/* The banner, with the two spaces and the trailing hyphen. */
+	if (product != NULL && *product != '\0' && pname != NULL && *pname != '\0') {
+		char banner[PATH_MAX + 128];
+
+		cver = settings_get(t, "CURRENT_PROJECT_VERSION");
+		snprintf(banner, sizeof(banner),
+		    "\"@(#)PROGRAM:%s  PROJECT:%s-%s\"", product, pname,
+		    (cver != NULL) ? cver : "");
+		settings_defaults_set(t, "VERSION_INFO_STRING", banner);
+	}
+
+	/* Where a bundled XPC service would go.  Same for every product. */
+	settings_defaults_set(t, "XPCSERVICES_FOLDER_PATH", "/XPCServices");
+}
+
+/*
  * The per-user caches.
  *
  * Two families under the Darwin user cache directory, and the shape is Apple's
@@ -1442,6 +1572,14 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 		}
 
 		derive_build_dirs(t);
+
+		/*
+		 * After the merge, because two of the nine are named
+		 * after settings the project writes: PRODUCT_NAME is
+		 * $(TARGET_NAME) in almost every project, and expanding
+		 * it needs the target's own settings in place.
+		 */
+		derive_identity(t, root, project, target);
 	} else if (project != NULL && opts->verbose) {
 		fprintf(stderr, "xcodebuild: warning: could not parse project '%s'\n", project);
 	}

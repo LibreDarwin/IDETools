@@ -399,7 +399,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 32 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 23 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -521,9 +521,9 @@ Reproduce it: give both tools `-sdk macosx`, where the SDK resolves, and every
 one of the six agrees.
 
 ```
-settings emitted   apple 484, ours 481
-  shared            452
-  only in Apple      32
+settings emitted   apple 484, ours 490
+  shared            461
+  only in Apple      23
   only in ours       29
   shared, differing   0
 ```
@@ -745,6 +745,88 @@ And one looks like the rest and is not: `PROJECT_DERIVED_FILE_DIR` hangs off
 target in its path where `DERIVED_FILE_DIR` has both. Apple keeps the two one
 word apart.
 
+### The nine that name the project and the target
+
+None of the sixteen above is fixed text; all of them are paths, and every one of
+them can be derived from something already in the table. The nine left in the
+same family are fixed text in name only — each is a *translation* of something
+else, and four of the nine have a plausible wrong answer that still looks like a
+valid value.
+
+`PROJECT` is the project's own name and `TARGETNAME` is the target's, which is
+`TARGET_NAME` without the underscore. Those two are nearly free. The rest:
+
+| key | rule | the wrong answer that looks right |
+| --- | --- | --- |
+| `PROJECT_GUID` | MD5 of the `.xcodeproj` filename, extension included | the directory, or the pbxproj's contents |
+| `PACKAGE_TYPE` | from the target's `productType` | the `productType` itself |
+| `STRIP_STYLE` | from the target's `productType` | one value for all targets |
+| `VERSION_INFO_FILE` | `$(PRODUCT_NAME)_vers.c` | `$(TARGETNAME)_vers.c` |
+| `VERSION_INFO_BUILDER` | the passwd entry's login name | `$USER` |
+| `VERSION_INFO_STRING` | `"@(#)PROGRAM:…  PROJECT:…"` | one space, or `MARKETING_VERSION` |
+| `XPCSERVICES_FOLDER_PATH` | one fixed path | — |
+
+`PROJECT_GUID` is the one worth reading twice, because the value it is derived
+from is not the one a first reading suggests. It is the digest of the project's
+*filename*, extension and all — `md5("IDETools.xcodeproj")` is
+`06c6d787d2b9f8e5eca60b744348fec5` for this project — and it does not depend on
+the directory, nor on the pbxproj's contents. A renamed copy reports a different
+GUID; the same file reached through a symlink reports the same one, which is why
+the name is canonicalized with `realpath()` before it is digested. Taking the
+basename of the path as typed gets this wrong in the one case that is easy to
+hit: `xcodebuild -project /tmp/Alias.xcodeproj` then reports the digest of
+`Alias.xcodeproj`. Both 32 characters, no error, wrong project identity.
+
+`PACKAGE_TYPE` and `STRIP_STYLE` are read off the target's `productType`, and the
+two values measured here are the two this project uses:
+
+| `productType` | `PACKAGE_TYPE` | `STRIP_STYLE` |
+| --- | --- | --- |
+| `com.apple.product-type.tool` | `com.apple.package-type.mach-o-executable` | `all` |
+| `com.apple.product-type.library.dynamic` | `com.apple.package-type.mach-o-dylib` | `debugging` |
+
+A product type that is neither maps to nothing rather than to a guess. That is a
+deliberate gap: two are measured, and the alternative — a default that is wrong
+for every unmeasured type while looking right — is the same class of error this
+work has been removing.
+
+`VERSION_INFO_FILE` is named after the product, not the target, and the two
+differ for the library here: `PRODUCT_NAME` is `xcodebuildLoader` while
+`TARGETNAME` is `libxcodebuildLoader.dylib`, so the key is
+`xcodebuildLoader_vers.c`. A path built from the target's name is right on the
+tool target and wrong on the library, which is the useful shape for a test to
+have.
+
+`VERSION_INFO_BUILDER` is the login name from the password database — the same
+name `id -un` prints — and it is *not* `$USER`. Overriding or unsetting `USER`
+does not change it, so reading the environment would be right only for the
+common case and silently wrong under a build system that sets `USER`.
+
+`VERSION_INFO_STRING` is a version banner, and the two details that matter are
+the double space after `PROGRAM:` and the hyphen. The version comes from
+`CURRENT_PROJECT_VERSION`, not `MARKETING_VERSION`; the tool target sets no
+`CURRENT_PROJECT_VERSION` and still gets a trailing hyphen rather than an empty
+string, so `xcodebuild` reads `"@(#)PROGRAM:xcodebuild  PROJECT:IDETools-"` and
+the library reads `…"PROJECT:IDETools-0.1.0"`.
+
+All nine are defaults, so an output override still wins, and that was checked
+against Apple for each of the seven that are derived rather than constant:
+`PROJECT=Other`, `PROJECT_GUID=deadbeef`, `TARGETNAME=Nom`, `STRIP_STYLE=none`,
+`PACKAGE_TYPE=x`, `VERSION_INFO_BUILDER=zz` and
+`XPCSERVICES_FOLDER_PATH=/zz` are all honoured by both tools. `macOS` drops from
+32 absent keys to 23, and from 452 matching to 461.
+
+Nineteen assertions cover this, and 16 of them fail against the previous commit.
+Three pass either way, and for honest reasons: one checks `PRODUCT_NAME`, which
+already existed; the two override assertions show the override whether or not
+anything is derived. Two more were vacuous on the first pass and were rewritten —
+they compared the real project against a symlink to it, and against a second
+target, so with the key absent from both sides the empty values matched. Both
+now compare against the pinned literal, which is also why the GUID is written
+into the test as a constant: an implementation that hashed the wrong thing would
+still produce 32 well-formed hex characters, and a self-comparison would not have
+noticed.
+
 That exception is the visible edge of a much larger gap, and the larger gap is
 the next real item. With `-sdk iphoneos` this tool emits macOS-shaped settings:
 41 differing keys, nearly all of them one omission — there is no platform that
@@ -761,9 +843,9 @@ Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
 | | before | after (project default) | after (`-sdk macosx`) |
 | | --- | --- | --- |
-| only in Apple | 93 | 67 | 32 |
+| only in Apple | 93 | 67 | 23 |
 | shared, differing | 33 | 6 | 0 |
-| shared, matching | 332 | 385 | 452 |
+| shared, matching | 332 | 385 | 461 |
 
 The two columns differ only because of the missing SDK: the default build
 cannot resolve one, so it is the weaker of the two measurements and should not
@@ -952,8 +1034,8 @@ With those, the project default's 6 differences are all Apple's fallback, and
 produced by a self-build, and has been withdrawn.** It was measured after a
 build that named a tool which does not exist — the staged tree has no `xcodebuild`
 at its root — and hashed a file the build had not written. The real figure,
-produced by the procedure below, is `214696` bytes, sha256
-`2f00d8fd990b4b4c0968fcc516453f4a9b98ab4940aaf0403a61eb260bf7655d`, and it is
+produced by the procedure below, is `214760` bytes, sha256
+`da047d4468cfaf37d12c8a71ef30b78908f605d21aebda57063c01842a4c0c87`, and it is
 byte-identical across two consecutive passes. It moves whenever the source does,
 so it is a property of the tree rather than a fact about the tool; the figure
 here was recomputed after adding the sixteen target-directory settings and the
@@ -961,7 +1043,7 @@ here was recomputed after adding the sixteen target-directory settings and the
 commit recorded nor the `197704` before that. An earlier version of
 this paragraph also claimed the result was identical to the source tree's own
 `build/release` binary. That is not reproducible and is not claimed: the tree
-build is `195128` bytes, because it is compiled with different flags by a
+build is `195176` bytes, because it is compiled with different flags by a
 different driver. Only the two-pass equality is asserted.
 
 Three things about that procedure are worth writing down, because each one
@@ -1005,11 +1087,13 @@ The rest of the gap is systematic, not incidental:
   `.` against `/Users/…/IDETools`, `BUILD_DIR` `./build` against an absolute
   path. Ours also uses `./build/Debug` where Apple uses
   `…/build/…/Release-iphoneos`-style derived directories.
-- **32 settings missing outright** where the SDK resolves, including
-  `ANDROID_DEPLOYMENT_TARGET`, `LEGACY_DEVELOPER_DIR`,
-  `DUMP_DEPENDENCIES_OUTPUT_PATH` is no longer one of them, and neither is
-  `CCHROOT`; what is left is `PATH`, `LOCROOT`, `WORKSPACE_DIR` and a family of
-  `VERSION_INFO_*` and `*_INSTALL_PATH` values.
+- **23 settings missing outright** where the SDK resolves, including
+  `ANDROID_DEPLOYMENT_TARGET`, `LEGACY_DEVELOPER_DIR`, `GCC_SYMBOLS_PRIVATE_EXTERN`
+  and `REZ_EXECUTABLE`; `DUMP_DEPENDENCIES_OUTPUT_PATH` is no longer one of
+  them, nor is `CCHROOT`, nor any of the nine `*_INSTALL_PATH` and
+  `VERSION_INFO_*` values, nor `PROJECT_GUID`, nor `PACKAGE_TYPE`. What is left
+  is `PATH`, `LOCROOT`, `WORKSPACE_DIR`, the two trailing-space search paths,
+  and the two `LIBRARY_*_INSTALL_PATH` keys.
 - **51 we emit that Apple does not**, mostly code-signing and Clang-warning
   defaults (`AD_HOC_CODE_SIGNING_ALLOWED`, `CLANG_ENABLE_MODULES`,
   `CLANG_WARN_*`).
@@ -1056,28 +1140,29 @@ measurement rather than from reading code:
   paths look plausible. The derivation now requires `usr/bin`, which every real
   Developer directory has and the repository root does not. Fixed in the
   follow-up commit; the two new assertions fail without it.
-- **The 32 settings we still do not emit**, where the SDK resolves. The note here
+- **The 23 settings we still do not emit**, where the SDK resolves. The note here
   used to call the per-arch and per-variant directories the largest group; counted,
   they are six keys. The largest used to be the twenty-two `SRCROOT`-rooted file
   lists, and it was large because it was *not* one rule — `FILE_LIST`,
   `LD_MAP_FILE_PATH`, `PRECOMP_DESTINATION_DIR`, `REZ_COLLECTOR_DIR` and
   `PKGINFO_FILE_PATH` shared a prefix and nothing else. Sixteen of them turned out
   to hang off the target's own directory and are now done, along with the six
-  per-user caches, which took the largest group from twenty-two to six. The five
+  per-user caches, which took the largest group from twenty-two to six. The six
   groups that did turn out to be one rule each are all finished: the `OBJROOT`
   family (`COMPOSITE_SDK_DIRS`, `GENERATED_MODULEMAP_DIR`,
   `SHARED_PRECOMPS_DIR`, `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`), the two
   products-directory keys (`SHARED_DERIVED_FILE_DIR`,
   `METAL_LIBRARY_OUTPUT_DIR`), the ten `SYSTEM_*`/`LOCAL_*`/`USER_*` install
-  locations, the six caches, and the sixteen under the target directory. What is
-  left is 32, and the measured shape of it is worth having rather than guessing
-  at: 6 rooted at `SRCROOT`, 8 under the Developer directory (`PLATFORM_DIR`,
-  `TOOLCHAIN_DIR`, the `SDK_DIR_*` pair, the two test search paths, `PATH`,
-  `XCODE_APP_SUPPORT_DIR`), and 18 fixed values with no path in them at all. The
-  `/var/folders` group that was in the original count is now empty. The `SRCROOT`
-  group is down to the four project-rooted keys and the two trailing-space search
-  paths, and it is the one worth attacking next. One correction to a claim this
-  document used to make: two of the six *are* rooted at
+  locations, the six caches, the sixteen under the target directory, and the nine
+  that name the project and target. What is left is 23, and the measured shape of
+  it is worth having rather than guessing at: 6 rooted at `SRCROOT`, 8 under the
+  Developer directory (`PLATFORM_DIR`, `TOOLCHAIN_DIR`, the `SDK_DIR_*` pair, the
+  two test search paths, `XCODE_APP_SUPPORT_DIR`, and `PATH`, which is a list of
+  those paths rather than one of them), and 9 fixed values with no path in them at
+  all. The `/var/folders` group that was in the original count is now empty. The
+  `SRCROOT` group is down to the four project-rooted keys and the two
+  trailing-space search paths, and it is the one worth attacking next. One
+  correction to a claim this document used to make: two of the six *are* rooted at
   `CONFIGURATION_BUILD_DIR` — `LIBRARY_SEARCH_PATHS` and `REZ_SEARCH_PATHS`, both
   the products directory with a trailing space — so "none are
   build-directory-rooted" was wrong twice over, and the group is not purely

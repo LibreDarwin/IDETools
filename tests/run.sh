@@ -932,6 +932,92 @@ case $iosroot in
     ;;
 esac
 
+# What this project and target are called.  Nine keys, all read off the
+# project's filename and the target's productType, and all of them
+# target-specific, so they are pinned for both of this project's targets: a tool
+# and a dynamic library, which between them cover both product types this
+# project uses, and the difference between a target that sets a version and one
+# that does not.
+tgt_tool=xcodebuild
+tgt_lib=libxcodebuildLoader.dylib
+
+is "PROJECT is the project's own name" IDETools \
+    "$(setting "$PROJ" PROJECT -sdk macosx)"
+is "TARGETNAME is the target's, and follows -target" "$tgt_lib" \
+    "$(setting "$PROJ" TARGETNAME -sdk macosx -target "$tgt_lib")"
+
+# The GUID is the MD5 of the project's *filename*, extension included -- not of
+# its contents and not of its directory.  Pinned as a literal, because an
+# implementation that hashed the path or the pbxproj would produce a
+# well-formed 32 characters and no error.
+is "PROJECT_GUID is the digest of the .xcodeproj filename" \
+    06c6d787d2b9f8e5eca60b744348fec5 \
+    "$(setting "$PROJ" PROJECT_GUID -sdk macosx)"
+is "and it is the same for every target, being the project's" \
+    06c6d787d2b9f8e5eca60b744348fec5 \
+    "$(setting "$PROJ" PROJECT_GUID -sdk macosx -target "$tgt_lib")"
+
+# The symlink is the whole reason the name is canonicalized before it is
+# digested.  Taken from the path as typed this reports the alias's digest,
+# which is a plausible-looking GUID and is wrong.  Both sides are compared to
+# the literal rather than to each other, so a tool that reported nothing at all
+# fails here instead of matching an equally empty other side.
+alias="$scratch/Alias.xcodeproj"
+ln -sfn "$PROJ" "$alias"
+is "a symlink to the project still reports the real name's GUID" \
+    06c6d787d2b9f8e5eca60b744348fec5 \
+    "$(setting "$alias" PROJECT_GUID -sdk macosx)"
+
+# The two productType-dependent keys, for both product types in this project.
+is "a tool is a mach-o executable" com.apple.package-type.mach-o-executable \
+    "$(setting "$PROJ" PACKAGE_TYPE -sdk macosx -target "$tgt_tool")"
+is "stripped with everything" all \
+    "$(setting "$PROJ" STRIP_STYLE -sdk macosx -target "$tgt_tool")"
+is "a dynamic library is a mach-o dylib" com.apple.package-type.mach-o-dylib \
+    "$(setting "$PROJ" PACKAGE_TYPE -sdk macosx -target "$tgt_lib")"
+is "and stripped in debugging" debugging \
+    "$(setting "$PROJ" STRIP_STYLE -sdk macosx -target "$tgt_lib")"
+
+# Named after the product, which is not the target's name: this target's
+# PRODUCT_NAME is xcodebuildLoader while TARGETNAME is the .dylib, so a path
+# built from TARGETNAME gets it wrong in a way that looks fine on the tool
+# target and wrong only here.
+is "VERSION_INFO_FILE follows PRODUCT_NAME, not TARGETNAME" \
+    xcodebuildLoader_vers.c \
+    "$(setting "$PROJ" VERSION_INFO_FILE -sdk macosx -target "$tgt_lib")"
+is "and PRODUCT_NAME is indeed the other name" xcodebuildLoader \
+    "$(setting "$PROJ" PRODUCT_NAME -sdk macosx -target "$tgt_lib")"
+
+# The login name from the password database, which is not $USER: with USER set
+# to something else and with it unset, Apple still reports the account name.
+is "VERSION_INFO_BUILDER is the account name" "$(/usr/bin/id -un)" \
+    "$(setting "$PROJ" VERSION_INFO_BUILDER -sdk macosx)"
+is "and it is not \$USER" "$(/usr/bin/id -un)" \
+    "$(USER=not-the-user setting "$PROJ" VERSION_INFO_BUILDER -sdk macosx)"
+
+# Two spaces after PROGRAM:, and a version-less form that still carries its
+# hyphen.  The tool sets no CURRENT_PROJECT_VERSION; the library sets 0.1.0.
+is "VERSION_INFO_STRING quotes the whole banner" \
+    '"@(#)PROGRAM:xcodebuild  PROJECT:IDETools-"' \
+    "$(setting "$PROJ" VERSION_INFO_STRING -sdk macosx -target "$tgt_tool")"
+is "and the hyphen is still there with no version" 1 \
+    "$([ "$(setting "$PROJ" VERSION_INFO_STRING -sdk macosx -target "$tgt_tool")" = \
+        "$(setting "$PROJ" VERSION_INFO_STRING -sdk macosx -target "$tgt_tool)-")" ] && echo 0 || echo 1)"
+is "a target with a version ends with it" \
+    '"@(#)PROGRAM:xcodebuildLoader  PROJECT:IDETools-0.1.0"' \
+    "$(setting "$PROJ" VERSION_INFO_STRING -sdk macosx -target "$tgt_lib")"
+
+is "XPCSERVICES_FOLDER_PATH is one fixed path" /XPCServices \
+    "$(setting "$PROJ" XPCSERVICES_FOLDER_PATH -sdk macosx -target "$tgt_lib")"
+
+# These are defaults, so an output override still wins -- the same precedence
+# as the caches.  Checked on the two whose derivation is not a lookup of a
+# value the project already set.
+is "an output override beats the derived name" Other \
+    "$(setting "$PROJ" PROJECT PROJECT=Other -sdk macosx)"
+is "and the derived GUID" deadbeef \
+    "$(setting "$PROJ" PROJECT_GUID PROJECT_GUID=deadbeef -sdk macosx)"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
