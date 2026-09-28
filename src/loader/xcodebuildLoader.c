@@ -194,6 +194,23 @@ developer_dir_of(const char *executablePath, char *out, size_t size)
                 return -1;
         strcpy(out, buf);
 
+        /*
+         * Three components is not evidence of a Developer directory: the
+         * same derivation applied to build/release/xcodebuild yields the
+         * repository root.  Require usr/bin, as xt_default_developer_dir()
+         * now does, so the loader and the tool accept the same directories.
+         */
+        {
+                char usrbin[PATH_MAX];
+                struct stat st;
+
+                if (snprintf(usrbin, sizeof(usrbin), "%s/usr/bin", buf) >=
+                    (int)sizeof(usrbin))
+                        return -1;
+                if (stat(usrbin, &st) != 0 || !S_ISDIR(st.st_mode))
+                        return -1;
+        }
+
         return 0;
 }
 

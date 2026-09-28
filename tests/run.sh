@@ -540,6 +540,41 @@ is "and the two do not collide" \
     "" "$([ "$(setting_dev "$devroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)" = \
          "$(setting_dev "$otherroot" "$PROJ" SYSTEM_DEVELOPER_BIN_DIR)" ] && echo same)"
 
+# Stripping three components off the tool's own path lands on a directory for
+# anything three levels deep, and this harness lives at build/release, so the
+# repository root qualifies.  With no configuration to answer instead, that
+# root was reported as DEVELOPER_DIR and every developer key was derived
+# inside it -- thirty-odd paths with nothing behind them, which is worse than
+# the CommandLineTools default it displaced.
+#
+# An empty HOME stands in for "unconfigured" without touching the real one.
+nohome="$scratch/no-home"
+mkdir -p "$nohome"
+reported=$(env -u DEVELOPER_DIR HOME="$nohome" "$TOOL" -project "$PROJ" \
+    -showBuildSettings 2>/dev/null | sed -n 's/^    DEVELOPER_DIR = //p' | head -1)
+isnt "an unconfigured run does not adopt the tool's own directory" \
+    "$ROOT" "$reported"
+# Stated as a property rather than as the compiled-in default, so this keeps
+# testing the derivation instead of one machine's answer to it.
+is "the reported developer directory has a usr/bin in it" \
+    "" "$([ -d "$reported/usr/bin" ] || echo missing)"
+
+# The positive case, without naming a machine-specific staged tree: a copy of
+# the tool three levels down inside a synthetic Developer layout must still be
+# found.  The staged self-build this repository is built with is exactly that
+# shape, and a check that rejected it would break the build it protects.
+stage="$scratch/StagedDeveloper"
+mkdir -p "$stage/usr/bin"
+cp "$TOOL" "$stage/usr/bin/xcodebuild"
+# Compared physically: the answer comes back through realpath, and a scratch
+# directory under /var/folders is a symlink to /private/var/folders.
+stage_physical=$(cd "$stage" && pwd -P)
+is "a real developer layout is still recognised" \
+    "$stage_physical" \
+    "$(env -u DEVELOPER_DIR HOME="$nohome" "$stage/usr/bin/xcodebuild" \
+        -project "$PROJ" -showBuildSettings 2>/dev/null |
+        sed -n 's/^    DEVELOPER_DIR = //p' | head -1)"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

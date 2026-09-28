@@ -835,19 +835,26 @@ other.
 The next candidates, in the order they are worth doing, all come from the same
 measurement rather than from reading code:
 
-- **What an unset `DEVELOPER_DIR` means**, now that the measurement has turned
-  this from a 10-key discrepancy into a 31-key one and shown it is a single
-  decision rather than 31. Apple resolves the developer directory against the
-  bundle it was launched from and ignores the variable entirely; `xcode-select`
-  honours the variable. We honour it, and fall back to CommandLineTools. Every
-  one of the 31 differences in the unmatched comparison above follows from that
-  one choice, including the four `SDK*` keys, since `-sdk macosx` resolves
-  inside whichever directory is in force. We keep honouring the variable —
-  dropping it would break the staged self-build this repository is built with,
-  and when it names Apple's own directory the two agree exactly, which is the
-  0-differing comparison. What is left is the unset case: asking `xcode-select`
-  before falling back to CommandLineTools would match Apple on any machine
-  where the variable is not set, which is almost all of them.
+- **What an unset `DEVELOPER_DIR` means.** I wrote this item up expecting the
+  answer to be "ask `xcode-select` before falling back to CommandLineTools",
+  and that expectation was wrong. Chasing it found the CLT answer was never the
+  compiled-in fallback: our own `$HOME/.xcdev.dat` says
+  `/Library/Developer/CommandLineTools` while `xcode-select -p` says the Xcode
+  path. The two tools read different configuration files, and on this machine
+  they disagree. Reordering the chain would not have changed the answer, so
+  there was no fix to make — the two are each correct given their own config,
+  which is why the matched comparison is the one worth reading.
+- **Reject a derived directory that is not one.** The same investigation found a
+  real defect. The fallback derives the developer directory by stripping three
+  path components off the tool's own location and accepted whatever directory
+  that named. The test harness lives at `build/release/xcodebuild`, so three
+  components is the repository root: with no configuration present at all, an
+  unconfigured build tree reported the repository as `DEVELOPER_DIR` and
+  derived all 30 developer keys inside it, every one of them a path with nothing
+  behind it — worse than the CommandLineTools default it displaced, because the
+  paths look plausible. The derivation now requires `usr/bin`, which every real
+  Developer directory has and the repository root does not. Fixed in the
+  follow-up commit; the two new assertions fail without it.
 - **The 71 settings we do not emit**, where the SDK resolves. The largest
   remaining group is per-arch and per-variant build directories derived from
   `OBJROOT` — `PER_ARCH_OBJECT_FILE_DIR`, `PER_VARIANT_OBJECT_FILE_DIR`,

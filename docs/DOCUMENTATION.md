@@ -690,7 +690,13 @@ differently on purpose:
   still ignored. `xcodebuild -version` ignores it too.
 - **`xcode-select -p` honours `DEVELOPER_DIR`**, without validating it: a
   nonexistent path prints back with exit 0.
-- **We honour it**, and fall back to CommandLineTools when it is unset.
+- **We honour it**, then our own `$HOME/.xcdev.dat`, then a Developer directory
+  derived from the tool's own location, and only then the compiled-in
+  CommandLineTools default. Note the middle step: the two tools disagree about
+  what an unset variable means because they read different files, and on a
+  machine where `.xcdev.dat` and `xcode-select` name different directories they
+  will keep disagreeing. Neither is wrong; the matched comparison is the one
+  worth reading.
 
 Honouring it is deliberate. The staged self-build this repository is built with
 points `DEVELOPER_DIR` at a tree that is not Xcode, and a tool that ignored the
