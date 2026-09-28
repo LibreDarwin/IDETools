@@ -132,6 +132,22 @@ void settings_defaults_set(settings_table *t, const char *key, const char *value
 	settings_set(t, key, value);
 }
 
+void settings_remove(settings_table *t, const char *key)
+{
+	setting_entry *e;
+
+	if (t == NULL || key == NULL)
+		return;
+	e = find_entry(t, key);
+	if (e == NULL)
+		return;
+	free(e->key);
+	free(e->value);
+	memmove(e, e + 1, (t->count - ((size_t)(e - t->entries) + 1)) *
+	    sizeof(setting_entry));
+	t->count--;
+}
+
 /* Expand $(VAR), ${VAR} and ${VAR:-default} references. Unknown variables
  * are left verbatim. Returns a malloc'd string. */
 /* Expand $(VAR) and ${VAR} (and ${VAR:-default}) references against `t`.
@@ -264,6 +280,20 @@ typedef struct {
 	char *toolchain;
 	char *default_arch;
 	char *deployment_target;
+
+	/* The platform the SDK describes, from its own files. */
+	char *platform_name;             /* DefaultProperties:PLATFORM_NAME */
+	char *deployment_setting;        /* SupportedTargets.<plat>:DeploymentTargetSettingName */
+	char *triple_sys;                /* SupportedTargets.<plat>:LLVMTargetTripleSys */
+	char *platform_family_name;      /* SupportedTargets.<plat>:PlatformFamilyName */
+	char *platform_family_display;   /* SupportedTargets.<plat>:PlatformFamilyDisplayName */
+	char *ad_hoc_code_signing;       /* DefaultProperties:AD_HOC_CODE_SIGNING_ALLOWED */
+	char *code_sign_identity;        /* DefaultProperties:CODE_SIGN_IDENTITY */
+	char *dead_code_stripping;       /* DefaultProperties:DEAD_CODE_STRIPPING */
+	char *suggested_values;          /* DefaultProperties:DEPLOYMENT_TARGET_SUGGESTED_VALUES */
+	char *deployment_target_default; /* DefaultProperties:<DeploymentTargetSettingName> */
+	char *product_build_version;     /* <Plat>.platform/version.plist:ProductBuildVersion */
+	char *platform_dir;              /* from the SDK's path, e.g. "iPhoneOS" */
 } sdk_info;
 
 typedef struct {
@@ -327,11 +357,56 @@ static CFTypeRef cf_dict_get(CFTypeRef dict, const char *key)
 	return v;
 }
 
+/* Join a CFArray of strings into a space-separated malloc'd string. */
+static char *cf_array_join(CFTypeRef arr)
+{
+	char *list;
+	size_t len = 0, cap = 256;
+	CFIndex i;
+
+	if (arr == NULL || CFGetTypeID(arr) != CFArrayGetTypeID())
+		return NULL;
+	list = calloc(1, cap);
+	if (list == NULL)
+		return NULL;
+	for (i = 0; i < CFArrayGetCount((CFArrayRef)arr); i++) {
+		char *a = cf_string_dup(CFArrayGetValueAtIndex((CFArrayRef)arr, i));
+		size_t alen;
+
+		if (a == NULL)
+			continue;
+		alen = strlen(a);
+		if (len + alen + (len ? 1 : 0) + 1 >= cap) {
+			size_t ncap = cap * 2;
+			char *nl = realloc(list, ncap);
+
+			if (nl == NULL) {
+				free(a);
+				free(list);
+				return NULL;
+			}
+			list = nl;
+			cap = ncap;
+		}
+		if (len != 0)
+			list[len++] = ' ';
+		memcpy(list + len, a, alen);
+		len += alen;
+		free(a);
+	}
+	if (len == 0) {
+		free(list);
+		return NULL;
+	}
+	list[len] = '\0';
+	return list;
+}
+
 /* What an SDK says about itself, from the file Apple's SDKs carry. */
 static int read_sdk_settings_plist(const char *path, sdk_info *out)
 {
 	CFPropertyListRef root;
-	CFTypeRef targets, macos;
+	CFTypeRef targets, props, st;
 	CFDataRef data;
 	long len;
 	FILE *fp;
@@ -373,39 +448,139 @@ static int read_sdk_settings_plist(const char *path, sdk_info *out)
 	out->deployment_target =
 	    cf_string_dup(cf_dict_get(root, "DefaultDeploymentTarget"));
 
-	/* The architectures this SDK can build for, as one list. */
-	targets = cf_dict_get(root, "SupportedTargets");
-	if ((macos = cf_dict_get(targets, "macosx")) != NULL) {
-		CFTypeRef archs = cf_dict_get(macos, "Archs");
+	/*
+	 * Two places to read.  DefaultProperties carries what the platform
+	 * says at large -- its name, how it signs, which deployment targets
+	 * it suggests -- and SupportedTargets has a node per platform that
+	 * names the setting a deployment target is written as, the sys for
+	 * the target triple and the architectures the SDK can build for.
+	 * The macOS node is what the defaults above used to answer with;
+	 * the node an SDK names for itself only moves which one is read.
+	 */
+	props = cf_dict_get(root, "DefaultProperties");
+	out->platform_name = cf_string_dup(cf_dict_get(props, "PLATFORM_NAME"));
+	out->ad_hoc_code_signing =
+	    cf_string_dup(cf_dict_get(props, "AD_HOC_CODE_SIGNING_ALLOWED"));
+	out->code_sign_identity =
+	    cf_string_dup(cf_dict_get(props, "CODE_SIGN_IDENTITY"));
+	out->dead_code_stripping =
+	    cf_string_dup(cf_dict_get(props, "DEAD_CODE_STRIPPING"));
+	out->suggested_values = cf_array_join(
+	    cf_dict_get(props, "DEPLOYMENT_TARGET_SUGGESTED_VALUES"));
 
+	targets = cf_dict_get(root, "SupportedTargets");
+	st = cf_dict_get(targets, out->platform_name != NULL ?
+	    out->platform_name : "macosx");
+	if (st == NULL && out->platform_name != NULL)
+		st = cf_dict_get(targets, "macosx");
+
+	if (st != NULL) {
 		if (out->deployment_target == NULL)
 			out->deployment_target = cf_string_dup(
-			    cf_dict_get(macos, "DefaultDeploymentTarget"));
+			    cf_dict_get(st, "DefaultDeploymentTarget"));
 
-		if (archs != NULL && CFGetTypeID(archs) == CFArrayGetTypeID()) {
-			char list[256] = "";
-			CFIndex i;
+		out->deployment_setting =
+		    cf_string_dup(cf_dict_get(st, "DeploymentTargetSettingName"));
+		out->triple_sys =
+		    cf_string_dup(cf_dict_get(st, "LLVMTargetTripleSys"));
+		out->platform_family_name =
+		    cf_string_dup(cf_dict_get(st, "PlatformFamilyName"));
+		out->platform_family_display =
+		    cf_string_dup(cf_dict_get(st, "PlatformFamilyDisplayName"));
+		out->default_arch = cf_array_join(cf_dict_get(st, "Archs"));
 
-			for (i = 0; i < CFArrayGetCount((CFArrayRef)archs); i++) {
-				char *a = cf_string_dup(
-				    CFArrayGetValueAtIndex((CFArrayRef)archs, i));
-
-				if (a == NULL)
-					continue;
-				if (list[0] != '\0')
-					strlcat(list, " ", sizeof(list));
-				strlcat(list, a, sizeof(list));
-				free(a);
-			}
-
-			if (list[0] != '\0')
-				out->default_arch = strdup(list);
-		}
+		/* Each SDK's own deployment-target default, under the
+		 * setting it says deployment targets are written as. */
+		if (out->deployment_setting != NULL)
+			out->deployment_target_default = cf_string_dup(
+			    cf_dict_get(props, out->deployment_setting));
 	}
 
 	CFRelease(root);
 
 	return (out->version != NULL || out->deployment_target != NULL) ? 0 : -1;
+}
+
+/* The platform bundle an SDK lives in, "<devpath>/Platforms/<Dir>.platform",
+ * derived from the SDK's own directory path. */
+static char *sdk_platform_bundle_dir(const char *sdk_dir)
+{
+	const char *m, *n;
+	size_t pre, len, plen;
+	char *out;
+
+	if (sdk_dir == NULL)
+		return NULL;
+	m = strstr(sdk_dir, "/Platforms/");
+	n = m != NULL ? strstr(m, ".platform") : NULL;
+	if (n == NULL)
+		return NULL;
+
+	pre = (size_t)(m - sdk_dir);
+	plen = sizeof(".platform") - 1;
+	len = (size_t)(n - m) + plen;
+	out = malloc(pre + len + 1);
+	if (out == NULL)
+		return NULL;
+	memcpy(out, sdk_dir, pre);
+	memcpy(out + pre, m, len);
+	out[pre + len] = '\0';
+	return out;
+}
+
+/* The platform bundle's product-build version and the name the bundle
+ * spells its platform directory with, taken from where the SDK lives. */
+static void read_platform_bundle(const char *path, sdk_info *out)
+{
+	const char *base;
+	char *bundle, pv[PATH_MAX];
+	size_t len;
+
+	bundle = sdk_platform_bundle_dir(path);
+	if (bundle == NULL)
+		return;
+
+	base = strrchr(bundle, '/');
+	base = base != NULL ? base + 1 : bundle;
+	len = strlen(base);
+	if (len > sizeof(".platform") - 1 &&
+	    strcmp(base + len - (sizeof(".platform") - 1), ".platform") == 0)
+		out->platform_dir =
+		    strndup(base, len - (sizeof(".platform") - 1));
+
+	snprintf(pv, sizeof(pv), "%s/version.plist", bundle);
+	{
+		CFDictionaryRef d = cfplist_read(pv);
+
+		if (d != NULL) {
+			out->product_build_version =
+			    cfplist_string(d, "ProductBuildVersion");
+			CFRelease(d);
+		}
+	}
+	free(bundle);
+}
+
+static void sdk_info_clear(sdk_info *info)
+{
+	free(info->name);
+	free(info->version);
+	free(info->toolchain);
+	free(info->default_arch);
+	free(info->deployment_target);
+	free(info->platform_name);
+	free(info->deployment_setting);
+	free(info->triple_sys);
+	free(info->platform_family_name);
+	free(info->platform_family_display);
+	free(info->ad_hoc_code_signing);
+	free(info->code_sign_identity);
+	free(info->dead_code_stripping);
+	free(info->suggested_values);
+	free(info->deployment_target_default);
+	free(info->product_build_version);
+	free(info->platform_dir);
+	memset(info, 0, sizeof(*info));
 }
 
 static int read_sdk_info(const char *path, sdk_info *out)
@@ -421,8 +596,10 @@ static int read_sdk_info(const char *path, sdk_info *out)
 	 * triple built from a deployment target of 1.0.
 	 */
 	snprintf(info_path, sizeof(info_path), "%s/SDKSettings.plist", path);
-	if (read_sdk_settings_plist(info_path, out) == 0)
+	if (read_sdk_settings_plist(info_path, out) == 0) {
+		read_platform_bundle(path, out);
 		return 0;
+	}
 
 	snprintf(info_path, sizeof(info_path), "%s/info.ini", path);
 	return ini_parse(info_path, sdk_ini_handler, out) == -1 ? -1 : 0;
@@ -531,9 +708,7 @@ void settings_sync_sdk_root(settings_table *t)
 		}
 	}
 
-	free(info.name);
-	free(info.version);
-	free(info.deployment_target);
+	sdk_info_clear(&info);
 }
 
 static int read_toolchain_info(const char *path, toolchain_info *out)
@@ -610,6 +785,343 @@ static void target_triple(char *triple, size_t size, const char *ver, const char
 		case 2: case 1: default: kern_ver = 9; break;
 	}
 	snprintf(triple, size, "%s-apple-darwin%d", arch, kern_ver);
+}
+
+/*
+ * What Apple reports, measured per platform, for a target that sets
+ * nothing.  One row per platform; a NULL member means Apple does not
+ * report that key for the platform at all, and it is dropped rather
+ * than left with a value that belongs to another platform.  The macOS
+ * row says exactly what the defaults above say, so applying it is a
+ * no-op.
+ */
+struct platform_shape {
+	const char *name;
+	const char *archs_standard;
+	const char *archs_standard_32_64;
+	const char *archs_standard_32;
+	const char *archs_standard_64;
+	const char *archs_standard_incl;
+	const char *bundle_format;
+	const char *bundle_extensions;
+	const char *bundle_frameworks;
+	const char *bundle_plugins;
+	const char *bundle_private_headers;
+	const char *bundle_public_headers;
+	const char *compress_png;
+	const char *debug_info_format;
+	const char *embedded_profile;
+	const char *infoplist_format;
+	const char *plist_format;
+	const char *strings_encoding;
+	const char *strip_bitcode;
+	const char *supported_platforms;
+	const char *preferred_arch;
+	const char *valid_archs;
+};
+
+static const struct platform_shape platform_shapes[] = {
+	{
+		"macosx",
+		"arm64 x86_64", "arm64 x86_64 i386", "i386",
+		"arm64 x86_64", "arm64 x86_64",
+		"deep", "Contents/Extensions", "Contents/Frameworks",
+		"Contents/PlugIns", "Contents/PrivateHeaders", "Contents/Headers",
+		"NO", "dwarf", "embedded.provisionprofile",
+		"same-as-input", "same-as-input", "UTF-16", "NO",
+		"macosx", "x86_64", "arm64 arm64e i386 x86_64",
+	},
+	{
+		"iphoneos",
+		"arm64", "armv7 arm64", "armv7",
+		"arm64", "arm64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", "embedded.mobileprovision",
+		"binary", "binary", "binary", "YES",
+		"iphoneos iphonesimulator", "arm64", "arm64 arm64e armv7 armv7s",
+	},
+	{
+		"iphonesimulator",
+		"arm64 x86_64", "arm64 x86_64", NULL,
+		"arm64 x86_64", "arm64 x86_64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", NULL,
+		"binary", "binary", "binary", "NO",
+		"iphoneos iphonesimulator", "x86_64", "arm64 x86_64",
+	},
+	{
+		"appletvos",
+		"arm64", "arm64", NULL,
+		"arm64 arm64e", "arm64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", "embedded.mobileprovision",
+		"binary", "binary", "binary", "YES",
+		"appletvos appletvsimulator", "arm64", "arm64 arm64e",
+	},
+	{
+		"appletvsimulator",
+		"arm64 x86_64", "arm64 x86_64", NULL,
+		"arm64 x86_64", "arm64 x86_64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", NULL,
+		"binary", "binary", "binary", "NO",
+		"appletvos appletvsimulator", "x86_64", "arm64 x86_64",
+	},
+	{
+		"watchos",
+		"arm64 arm64_32", NULL, "armv7k arm64_32",
+		NULL, NULL,
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", "embedded.mobileprovision",
+		"binary", "binary", "binary", "YES",
+		"watchos watchsimulator", "arm64", "arm64 arm64_32 arm64e armv7k",
+	},
+	{
+		"watchsimulator",
+		"arm64 x86_64", "arm64 x86_64", NULL,
+		"arm64 x86_64", "arm64 x86_64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", NULL,
+		"binary", "binary", "binary", "NO",
+		"watchos watchsimulator", "x86_64", "arm64 x86_64",
+	},
+	{
+		"xros",
+		"arm64", "arm64", NULL,
+		"arm64", "arm64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", "embedded.mobileprovision",
+		"binary", "binary", "binary", "YES",
+		"xros xrsimulator", NULL, "arm64 arm64e",
+	},
+	{
+		"xrsimulator",
+		"arm64 x86_64", "arm64 x86_64", NULL,
+		"arm64 x86_64", "arm64 x86_64",
+		"shallow", "Extensions", "Frameworks",
+		"PlugIns", "PrivateHeaders", "Headers",
+		"YES", "dwarf-with-dsym", NULL,
+		"binary", "binary", "binary", "NO",
+		"xros xrsimulator", NULL, "arm64 x86_64",
+	},
+	{ .name = NULL }
+};
+
+static const struct platform_shape *platform_shape(const char *name)
+{
+	size_t i;
+
+	if (name == NULL)
+		return NULL;
+	for (i = 0; platform_shapes[i].name != NULL; i++)
+		if (strcmp(platform_shapes[i].name, name) == 0)
+			return &platform_shapes[i];
+	return NULL;
+}
+
+static void settings_set_or_remove(settings_table *t, const char *key,
+                                   const char *value)
+{
+	if (value != NULL)
+		settings_set(t, key, value);
+	else
+		settings_remove(t, key);
+}
+
+/*
+ * The last word on the keys that change with the platform: whatever the
+ * macOS defaults above said, the platform the selected SDK describes
+ * corrects it here.  What the SDK's own files carry is read back; the
+ * rest is the measured table.  A selected platform no row describes --
+ * an SDK that names neither itself nor the bundle it lives in -- leaves
+ * the macOS defaults standing, which is what an unnamed developer
+ * directory used to report.
+ *
+ * Called from settings_load_defaults, before the project is merged, so
+ * what a project sets still speaks last.
+ */
+static void settings_apply_platform(settings_table *t, const sdk_info *sdk,
+                                    const char *devpath)
+{
+	const struct platform_shape *shape;
+	const char *plat = sdk->platform_name;
+	char derived[PATH_MAX];
+	int is_macosx, is_sim;
+
+	/* An SDK that does not name itself in DefaultProperties can still
+	 * be placed by the platform bundle its directory sits in. */
+	if (plat == NULL && sdk->platform_dir != NULL) {
+		size_t i, n = strlen(sdk->platform_dir);
+
+		if (n >= sizeof(derived))
+			n = sizeof(derived) - 1;
+		for (i = 0; i < n; i++)
+			derived[i] = tolower((unsigned char)sdk->platform_dir[i]);
+		derived[n] = '\0';
+		plat = derived;
+	}
+
+	is_macosx = plat != NULL && strcmp(plat, "macosx") == 0;
+	is_sim = plat != NULL && strstr(plat, "simulator") != NULL;
+	shape = platform_shape(plat);
+
+	if (sdk->platform_name != NULL)
+		settings_set(t, "PLATFORM_NAME", sdk->platform_name);
+	if (sdk->deployment_setting != NULL)
+		settings_set(t, "DEPLOYMENT_TARGET_SETTING_NAME",
+		    sdk->deployment_setting);
+	if (sdk->triple_sys != NULL) {
+		settings_set(t, "__ORIGINAL_SDK_DEFINED_LLVM_TARGET_TRIPLE_SYS",
+		    sdk->triple_sys);
+		settings_set(t, "SWIFT_PLATFORM_TARGET_PREFIX", sdk->triple_sys);
+	}
+	if (sdk->platform_family_name != NULL)
+		settings_set(t, "PLATFORM_FAMILY_NAME",
+		    sdk->platform_family_name);
+	if (sdk->platform_family_display != NULL) {
+		char buf[128];
+
+		snprintf(buf, sizeof(buf), "%s%s", sdk->platform_family_display,
+		    is_sim ? " Simulator" : "");
+		settings_set(t, "PLATFORM_DISPLAY_NAME", buf);
+	}
+	if (sdk->ad_hoc_code_signing != NULL)
+		settings_set(t, "AD_HOC_CODE_SIGNING_ALLOWED",
+		    sdk->ad_hoc_code_signing);
+	/* DEAD_CODE_STRIPPING is absent on macOS, which is NO; the other
+	 * platforms carry YES themselves. */
+	if (sdk->dead_code_stripping != NULL)
+		settings_set(t, "DEAD_CODE_STRIPPING",
+		    sdk->dead_code_stripping);
+	/* macOS signs ad-hoc and says so itself; the other platforms
+	 * answer from their own file. */
+	if (!is_macosx && sdk->code_sign_identity != NULL)
+		settings_set(t, "CODE_SIGN_IDENTITY", sdk->code_sign_identity);
+	if (sdk->suggested_values != NULL)
+		settings_set(t, "DEPLOYMENT_TARGET_SUGGESTED_VALUES",
+		    sdk->suggested_values);
+	if (sdk->deployment_target_default != NULL &&
+	    sdk->deployment_setting != NULL)
+		settings_set(t, sdk->deployment_setting,
+		    sdk->deployment_target_default);
+	if (sdk->product_build_version != NULL) {
+		settings_set(t, "PLATFORM_PRODUCT_BUILD_VERSION",
+		    sdk->product_build_version);
+		settings_set(t, "SDK_PRODUCT_BUILD_VERSION",
+		    sdk->product_build_version);
+	}
+	if (sdk->name != NULL)
+		settings_set(t, "SDK_NAMES", sdk->name);
+
+	/* The OS half of the LLVM target triple is the sys plus the
+	 * deployment target in force, whichever target that is. */
+	if (sdk->triple_sys != NULL && sdk->deployment_setting != NULL) {
+		char buf[256];
+
+		snprintf(buf, sizeof(buf), "%s$(%s)", sdk->triple_sys,
+		    sdk->deployment_setting);
+		settings_set(t, "LLVM_TARGET_TRIPLE_OS_VERSION", buf);
+	}
+
+	/* The signed and unsigned variants are macOS's alone. */
+	if (!is_macosx) {
+		settings_remove(t, "LLVM_TARGET_TRIPLE_OS_VERSION_NO");
+		settings_remove(t, "LLVM_TARGET_TRIPLE_OS_VERSION_YES");
+	}
+
+	/* Where the platform's tools live: beside DEVELOPER_DIR on macOS,
+	 * under the platform bundle's Developer directory elsewhere.  The
+	 * SDKs are under the bundle for every platform, macOS included.
+	 * An SDK no bundle places (a bare info.ini, say) answers as
+	 * MacOSX, which is what the tree used to report for all of them. */
+	if (devpath != NULL) {
+		const char *pdir = sdk->platform_dir != NULL ?
+		    sdk->platform_dir : "MacOSX";
+		char bundle[PATH_MAX], buf[PATH_MAX];
+		size_t i;
+		static const struct { const char *key, *tail; } pd[] = {
+			{ "PLATFORM_DEVELOPER_APPLICATIONS_DIR", "/Applications" },
+			{ "PLATFORM_DEVELOPER_BIN_DIR",          "/usr/bin" },
+			{ "PLATFORM_DEVELOPER_LIBRARY_DIR",      "/Library" },
+			{ "PLATFORM_DEVELOPER_TOOLS_DIR",        "/Tools" },
+			{ "PLATFORM_DEVELOPER_USR_DIR",          "/usr" },
+		};
+
+		snprintf(bundle, sizeof(bundle), "%s/Platforms/%s.platform",
+		    devpath, pdir);
+		snprintf(buf, sizeof(buf), "%s/Developer/SDKs", bundle);
+		settings_set(t, "PLATFORM_DEVELOPER_SDK_DIR", buf);
+
+		for (i = 0; i < sizeof(pd) / sizeof(pd[0]); i++) {
+			if (is_macosx)
+				snprintf(buf, sizeof(buf), "%s%s", devpath,
+				    pd[i].tail);
+			else
+				snprintf(buf, sizeof(buf), "%s/Developer%s",
+				    bundle, pd[i].tail);
+			settings_set(t, pd[i].key, buf);
+		}
+	}
+
+	/* A platform no row describes keeps the macOS defaults, which is
+	 * what it reported before the table existed. */
+	if (shape == NULL)
+		return;
+
+	settings_set_or_remove(t, "ARCHS_STANDARD", shape->archs_standard);
+	settings_set_or_remove(t, "ARCHS_STANDARD_32_64_BIT",
+	    shape->archs_standard_32_64);
+	settings_set_or_remove(t, "ARCHS_STANDARD_32_BIT",
+	    shape->archs_standard_32);
+	settings_set_or_remove(t, "ARCHS_STANDARD_64_BIT",
+	    shape->archs_standard_64);
+	settings_set_or_remove(t, "ARCHS_STANDARD_INCLUDING_64_BIT",
+	    shape->archs_standard_incl);
+	settings_set(t, "BUNDLE_FORMAT", shape->bundle_format);
+	settings_set(t, "BUNDLE_EXTENSIONS_FOLDER_PATH",
+	    shape->bundle_extensions);
+	settings_set(t, "BUNDLE_FRAMEWORKS_FOLDER_PATH",
+	    shape->bundle_frameworks);
+	settings_set(t, "BUNDLE_PLUGINS_FOLDER_PATH", shape->bundle_plugins);
+	settings_set(t, "BUNDLE_PRIVATE_HEADERS_FOLDER_PATH",
+	    shape->bundle_private_headers);
+	settings_set(t, "BUNDLE_PUBLIC_HEADERS_FOLDER_PATH",
+	    shape->bundle_public_headers);
+	settings_set(t, "COMPRESS_PNG_FILES", shape->compress_png);
+	settings_set(t, "DEBUG_INFORMATION_FORMAT", shape->debug_info_format);
+	settings_set_or_remove(t, "EMBEDDED_PROFILE_NAME",
+	    shape->embedded_profile);
+	settings_set(t, "INFOPLIST_OUTPUT_FORMAT", shape->infoplist_format);
+	settings_set(t, "PLIST_FILE_OUTPUT_FORMAT", shape->plist_format);
+	settings_set(t, "STRINGS_FILE_OUTPUT_ENCODING", shape->strings_encoding);
+	settings_set(t, "STRIP_BITCODE_FROM_COPIED_FILES",
+	    shape->strip_bitcode);
+	settings_set(t, "SUPPORTED_PLATFORMS", shape->supported_platforms);
+	settings_set_or_remove(t, "PLATFORM_PREFERRED_ARCH",
+	    shape->preferred_arch);
+	settings_set(t, "VALID_ARCHS", shape->valid_archs);
+
+	/* The plain bundle paths are macOS's layout; the deep-suffixed
+	 * views every platform reports. */
+	if (!is_macosx) {
+		settings_remove(t, "BUNDLE_CONTENTS_FOLDER_PATH");
+		settings_remove(t, "BUNDLE_EXECUTABLE_FOLDER_PATH");
+	}
+
+	/* Entitlements land in a special file inside the bundle on device
+	 * and macOS, and in the binary itself on simulators.  The signed
+	 * and unsigned variants are macOS-specific but Signature is what
+	 * every non-simulator platform reports, so simulators alone move
+	 * off the macOS default. */
+	if (is_sim)
+		settings_set(t, "ENTITLEMENTS_DESTINATION", "__entitlements");
 }
 
 int settings_load_defaults(settings_table *t, const char *devpath,
@@ -1178,6 +1690,10 @@ settings_defaults_set(t, "ALWAYS_SEARCH_USER_PATHS", "YES");
 
 	if (sdk.toolchain != NULL && tc.name == NULL)
 		settings_defaults_set(t, "TOOLCHAINS", sdk.toolchain);
+
+	/* What the defaults above report is macOS.  The platform the
+	 * selected SDK describes corrects the keys that move with it. */
+	settings_apply_platform(t, &sdk, devpath);
 
 	return 0;
 }

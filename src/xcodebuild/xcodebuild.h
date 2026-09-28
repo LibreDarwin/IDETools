@@ -74,6 +74,9 @@ void settings_set(settings_table *t, const char *key, const char *value);
 /* Append a key only if it does not already exist (lower precedence). */
 void settings_defaults_set(settings_table *t, const char *key, const char *value);
 
+/* Delete a key so that a platform that reports none does not either. */
+void settings_remove(settings_table *t, const char *key);
+
 /* Expand $(VAR) and ${VAR} references against this table. The result is
  * returned in a freshly allocated buffer (caller frees). */
 char *settings_expand(const settings_table *t, const char *value);

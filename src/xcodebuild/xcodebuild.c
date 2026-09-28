@@ -1613,15 +1613,20 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			{ "DT_TOOLCHAIN_DIR",
 			  "/Toolchains/XcodeDefault.xctoolchain" },
 
-			/*
-			 * The same furniture again under two prefixes:
-			 * SYSTEM_DEVELOPER_ and PLATFORM_DEVELOPER_.
-			 * Same directory, so the same tails -- only the
+			/* The same furniture again under two prefixes:
+			 * SYSTEM_DEVELOPER_ and the per-platform dirs.
+			 * SYSTEM_DEVELOPER_ sits beside DEVELOPER_DIR, so
+			 * the same tails as DEVELOPER_ -- only the
 			 * spelling varies, and not by any rule worth
 			 * relying on, since APPS_DIR and
 			 * APPLICATIONS_DIR are both /Applications and
 			 * TOOLS carries no _DIR at all.  So they are
 			 * spelled out rather than derived.
+			 *
+			 * PLATFORM_DEVELOPER_ moves with the selected
+			 * SDK's platform and is derived in
+			 * settings.c; on macOS it happens to equal
+			 * DEVELOPER_DIR plus the same tail.
 			 *
 			 * Apple resolves these against the bundle it was
 			 * launched from and ignores DEVELOPER_DIR
@@ -1630,13 +1635,6 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			 * variable, xcodebuild does not.  This tree is
 			 * the one building, which is the point of them.
 			 */
-			{ "PLATFORM_DEVELOPER_APPLICATIONS_DIR", "/Applications" },
-			{ "PLATFORM_DEVELOPER_BIN_DIR",          "/usr/bin" },
-			{ "PLATFORM_DEVELOPER_LIBRARY_DIR",      "/Library" },
-			{ "PLATFORM_DEVELOPER_SDK_DIR",
-			  "/Platforms/MacOSX.platform/Developer/SDKs" },
-			{ "PLATFORM_DEVELOPER_TOOLS_DIR",        "/Tools" },
-			{ "PLATFORM_DEVELOPER_USR_DIR",          "/usr" },
 
 			{ "SYSTEM_DEVELOPER_DIR",                "" },
 			{ "SYSTEM_DEVELOPER_APPS_DIR",           "/Applications" },
