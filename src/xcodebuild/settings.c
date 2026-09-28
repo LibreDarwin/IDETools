@@ -447,7 +447,6 @@ void settings_sync_sdk_root(settings_table *t)
 {
 	const char *root, *dir;
 	sdk_info info = {0};
-	char plist[PATH_MAX];
 
 	if (t == NULL)
 		return;
@@ -460,9 +459,27 @@ void settings_sync_sdk_root(settings_table *t)
 	if (dir != NULL && strcmp(dir, root) == 0)
 		return;
 
-	snprintf(plist, sizeof(plist), "%s/SDKSettings.plist", root);
-	if (read_sdk_settings_plist(plist, &info) != 0)
+	/* read_sdk_info() rather than the plist directly, so an SDK in the
+	 * older layout still answers: it reads SDKSettings.plist and falls
+	 * back to info.ini, and reading only the plist would leave exactly
+	 * the mismatch this exists to fix in place for any SDK that has
+	 * only the ini. */
+	if (read_sdk_info(root, &info) != 0) {
+		/* A directory that describes itself in neither layout is not
+		 * an SDK, and Apple says nothing about its identity for
+		 * one.  Keeping the defaults here would name whichever SDK
+		 * the scan found first, which is a different SDK, so the
+		 * identity is blanked rather than left lying.  SDK_DIR still
+		 * follows SDKROOT: that path is known, whatever it is. */
+		settings_set(t, "SDK_DIR", root);
+		settings_set(t, "SDK_NAME", "");
+		settings_set(t, "SDK_NAMES", "");
+		settings_set(t, "SDK_VERSION", "");
+		settings_set(t, "SDK_VERSION_ACTUAL", "");
+		settings_set(t, "SDK_VERSION_MAJOR", "");
+		settings_set(t, "SDK_VERSION_MINOR", "");
 		return;
+	}
 
 	settings_set(t, "SDK_DIR", root);
 	if (info.name != NULL) {
@@ -1000,7 +1017,13 @@ settings_defaults_set(t, "ALWAYS_SEARCH_USER_PATHS", "YES");
 	settings_defaults_set(t, "CODE_SIGNING_ALLOWED", "YES");
 	settings_defaults_set(t, "CODE_SIGNING_REQUIRED", "YES");
 	
-	settings_defaults_set(t, "CONFIGURATION", configuration ? configuration : "Debug");
+	/* Callers resolve the project's defaultConfigurationName and pass it
+	 * in, so the fallback is only here for a configuration-less load.  It
+	 * is Release to agree with project_default_configuration()'s own
+	 * fallback; the two answering differently is how a project that
+	 * declares no default used to get Debug from the build and Release
+	 * from -list. */
+	settings_defaults_set(t, "CONFIGURATION", configuration ? configuration : "Release");
 	settings_defaults_set(t, "CONFIGURATION_BUILD_DIR", "");
 	settings_defaults_set(t, "CONFIGURATION_TEMP_DIR", "");
 	settings_defaults_set(t, "CP", "/bin/cp");

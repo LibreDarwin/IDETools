@@ -297,7 +297,17 @@ Exports match Apple's name-for-name, with the same symbol types:
 | — | — | `T` — `XcodeBuildSetInvocation`, ours alone |
 
 Install name `@rpath/Frameworks/libxcodebuildLoader.dylib` and compatibility /
-current version `1.0.0` both match Apple. Verified end to end from a staged
+current version `1.0.0` both match Apple — those are the dylib's install-name
+versions, pinned there for the same reason, and they are not this project's
+version. The exported `xcodebuildLoaderVersionString` was
+`@(#)PROGRAM:xcodebuildLoader  PROJECT:IDETools-1.0.0`, which is Apple's shape
+carrying this project's semver in Apple's field: in Apple, `PROJECT:` names one
+Xcode build number shared by the product and the build, so `IDETools-24902` means
+build 24902 of IDETools. Emitting `IDETools-1.0.0` claimed to be an IDETools
+build in Apple's namespace at a version Apple never shipped. It now reads
+`@(#)PROGRAM:xcodebuildLoader  PROJECT:LibreDarwin-0.1.0`, with
+`CURRENT_PROJECT_VERSION` in `project.pbxproj` and the release tag all at
+`0.1.0`, and `_xcodebuildLoaderVersionNumber` at `0.1`. Verified end to end from a staged
 `Contents/Developer` layout: the runtime is found, `DYLD_INSERT_LIBRARIES` and
 `DYLD_IMAGE_SUFFIX=_asan` are set, `execv` replaces the image, and the second
 process declines to relaunch again. The no-runtime case reports
@@ -343,7 +353,7 @@ The small, self-contained neighbours worth considering as separate repos later:
 
 ## Plan
 
-1. ✅ `xcodebuild` — builds, `xcodebuild 1.0.0`, both make flavours and Xcode, and
+1. ✅ `xcodebuild` — builds, `xcodebuild 0.1.0`, both make flavours and Xcode, and
    builds its own project to a byte-identical binary.
 2. ✅ `libxcodebuildLoader.dylib` — implemented in `src/loader/` as C over
    CoreFoundation, exported surface matches Apple, and the relaunch is verified
@@ -363,6 +373,11 @@ The small, self-contained neighbours worth considering as separate repos later:
 6. ⬜ Open: whether `openxc-tools/xcodebuild` retires in favour of this repo. Not
    decided, and deliberately not acted on.
 7. ❌ `xcindex-test` — recorded, not planned.
+8. ✅ Regression tests in `tests/run.sh`, run by `make test` and `bmake test`.
+   36 assertions over the two bugs above plus the unresolvable-`SDKROOT` case
+   they turned up, each checked against the pbxproj, an SDK's own plist, or a
+   rule read off Apple rather than against the tool itself. Against `ba8ef6c`
+   the same file fails 17, so it discriminates.
 
 #### Status verdict — 2026-09-28
 
@@ -493,11 +508,17 @@ The configuration fix settles the default from the project's own
 answer now, read through one function (`project_default_configuration()`), with
 `"Release"` left as the fallback for a project that names none. It has to
 happen before the defaults load, because the name goes into
-`BUILT_PRODUCTS_DIR`, the temporary directories and `CONFIGURATION`.
+`BUILT_PRODUCTS_DIR`, the temporary directories and `CONFIGURATION`. The
+`settings_load_defaults()` fallback was `"Debug"` and is now `"Release"` too, so
+the two fallbacks cannot answer differently; that path is only reached for a
+configuration-less load, but a fallback that contradicts the other one is the
+same defect waiting for a caller.
 
 The SDK fix adds `settings_sync_sdk_root()`, which re-reads the SDK that
 `SDKROOT` names and takes its `Version` and `CanonicalName` from that SDK's own
-`SDKSettings.plist` — the same read the defaults came from. It also derives
+`SDKSettings.plist` — via `read_sdk_info()`, the same read the defaults came
+from, so an SDK in the older layout that answers from `info.ini` still answers
+here and the two paths cannot diverge. It also derives
 `SDK_VERSION_ACTUAL`/`MAJOR`/`MINOR` from the version so they cannot drift:
 Apple's encoding is each part zero-padded to two digits and run together
 (`26.5 → 260500`, `15.4 → 150400`), with `MAJOR` the major part padded to four
@@ -511,17 +532,32 @@ are now applied last, on both sides of the SDK sync, so an explicit setting on
 the command line wins — including an explicit `SDK_VERSION=`, which the sync
 would otherwise overrule.
 
+Writing the regression tests turned up a third case in the same family, which
+the tests now cover. When `SDKROOT` names a directory that describes itself in
+neither layout — not an SDK at all — Apple emits no `SDK_NAME`/`SDK_VERSION`, and
+keeping the scan's defaults would name a *different* SDK, which is precisely the
+defect above. The identity keys are now blanked in that case, with `SDK_DIR`
+still following `SDKROOT` because that path is known whatever it is. This is the
+one behaviour change here that is a visible output difference from before; it was
+a choice between leaving the lie and losing the keys, and it is recorded because
+someone reading `-showBuildSettings` for an unresolvable `SDKROOT` will notice
+the empty values.
+
 Verified after the fix: `SDK_DIR`/`SDK_NAME`/`SDK_NAMES`/`SDK_VERSION` and the
 three numbered forms match Apple for the project default and for `SDKROOT=`
 pointed at both `MacOSX26.5.sdk` and `MacOSX15.4.sdk`; an explicit
 `SDK_VERSION=99.1` and `SDK_VERSION_ACTUAL=123` still win; `-list` is unchanged
 against Apple; and the self-build fixed point still holds byte-identically
-(`197448` bytes, sha256 `288aabb35f14d7a9` — byte-for-byte the same artifact HEAD
-produces when told `-configuration Debug` explicitly, so the fix changes what the
-tool *reports* about a build, not how the build is compiled or linked). The
+(`197448` bytes, sha256 `3e19feaaefd15aa6` for the working tree including the
+`info.ini` and version changes — two consecutive self-builds are the same
+artifact, so the tool compiling itself is a fixed point). The
 `xcodebuild.c` diff is ~190 lines of re-indent because the pbxproj had to be
 parsed before the defaults load, which moved its one level of nesting; `-w` shows
 the real change as 109 lines.
+
+Note that a self-build overwrites the tool in place: `CONFIGURATION_BUILD_DIR` is
+`./build/release`, the same directory the tool is installed in. Back it up before
+running one, or measure the digest first.
 
 The rest of the gap is systematic, not incidental:
 

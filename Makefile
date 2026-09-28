@@ -177,7 +177,14 @@ install: all
 	install -m 0755 $(XCODEBUILD) $(STAGEDIR)/usr/bin/xcodebuild
 	install -m 0755 $(LOADER) $(STAGED_CONTENTS)/Frameworks/libxcodebuildLoader.dylib
 
+# The tests drive the built tool and check it against the project's own pbxproj
+# and the SDKs' own SDKSettings.plist, never against Apple's xcodebuild, so
+# they need no Xcode.  TOOL is passed rather than assumed because the tool's
+# path follows CONFIG.
+test: all
+	@TOOL=$(XCODEBUILD) sh tests/run.sh
+
 clean:
 	rm -rf build
 
-.PHONY: all install clean
+.PHONY: all install clean test

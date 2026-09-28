@@ -235,7 +235,7 @@ static void version_print(int verbose)
 	if (verbose) {
 		char *devpath = xbuild_get_developer_path();
 		if (devpath != NULL) {
-			fprintf(stdout, "Build version 1.0\n");
+			fprintf(stdout, "Build version 0.1.0\n");
 			fprintf(stdout, "Developer path: %s\n", devpath);
 			free(devpath);
 		}

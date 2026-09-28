@@ -601,11 +601,34 @@ missing, empty, directory and malformed-binary inputs all return NULL.
 The export path was checked separately during the backport with six
 `exportOptions.plist` inputs (XML, bplist, no `method`, missing path, junk, and
 a `method` that is a dict not a string), and ours and the tree's behaved
-identically — XML and bplist agreeing on every key. **That check is not
-reproducible through the installed CLI**, though: both tools now exit with
-`error: no clang at …` (raised at `build.c:3109`) before the plist is
-consulted, so re-establishing it needs a working clang or a direct harness
-against `cfplist_read()`. Treat it as a recorded measurement, not a live one.
+identically — XML and bplist agreeing on every key.
+
+**Re-measured live**, once the clang blocker was cleared: the missing-clang exit
+at `build.c:3109` was never about the export code. It is pre-existing, comes
+from the Developer directory defaulting to CommandLineTools, and disappears with
+`DEVELOPER_DIR` pointed at a tree that has a toolchain — the same environment the
+rest of this comparison is measured in. With that set, the six inputs run through
+the installed CLI on both tools:
+
+| Input | Ours | Apple |
+| --- | --- | --- |
+| XML `method` | plist read, export proceeds | plist read, `exportArchive The archive contains nothing that can be signed.` |
+| bplist `method` | identical to XML | identical to XML |
+| no `method` | `rc=1`, `does not specify a 'method'` | `rc=65`, `archive not found at path …` |
+| missing path | `rc=1`, `cannot read export options plist` | `rc=70`, `Couldn't load -exportOptionsPlist … No such file` |
+| `method` is a dict | `rc=1`, `does not specify a 'method'` | `rc=70`, `Failed to decode "method". Expected to decode String but found a dictionary instead.` |
+
+The plist reading is what is being compared, and it agrees on every input
+including the malformed ones: both reject a dict-typed `method` and a missing
+file, and both accept XML and bplist interchangeably. The rows where the exit
+codes and messages differ are **not a parsing difference** — they are how far
+each tool then gets. Apple proceeds to sign and export the archive and so
+reports on the archive's contents; `do_export_archive()` in `xcodebuild.c`
+validates and reads the options, prints the method, destination and team under
+`-verbose`, and returns. It does not sign, package or upload, so on a valid
+options plist it has nothing left to fail on where Apple has a real export to
+attempt. Adding export is a feature, not a parity fix, and is out of scope here;
+what is established is that the plist layer underneath it matches.
 
 `devpath.c` is 55 lines for a single function; `xcpath.c` is 43.
 
@@ -674,7 +697,20 @@ make/debug.mk             debug optimisation flags
 IDETools.xcodeproj/       project.pbxproj, single `xcodebuild` target
 src/xcodebuild/           the tool
 src/common/               devpath.{c,h} sdkpath.{c,h} cfplist.{c,h} xcpath.{c,h}
+tests/run.sh              regression tests, POSIX sh, no Xcode required
 ```
+
+`make test` (or `bmake test`) builds and then runs `tests/run.sh`, which drives
+the built tool through 36 assertions covering the two bugs this comparison found.
+Each expectation is derived from something other than the tool
+under test — the project's own `project.pbxproj`, an SDK's own
+`SDKSettings.plist`, or a rule read off Apple's output — so none of them can pass
+by agreeing with a shared bug, and none of them need Apple's binary to run. The
+SDK cases are skipped when the machine has no SDKs; the project fixtures are
+copies of the real `IDETools.xcodeproj` with `defaultConfigurationName`
+rewritten, because a hand-written pbxproj is a second thing to get wrong. Run
+against the pre-fix commit `ba8ef6c` the same file reports 17 failures, so it
+discriminates rather than merely passing.
 
 What got added after the rename, all on `master`:
 
@@ -740,7 +776,7 @@ xcodebuild -project IDETools.xcodeproj -configuration Release build
 xcodebuild -project IDETools.xcodeproj -configuration Debug build
 make install DESTDIR=/tmp/idetest/      -> .../Developer/usr/bin/xcodebuild
 bmake install PREFIX=build/release/Developer
-build/release/xcodebuild -version        ->  xcodebuild 1.0.0
+build/release/xcodebuild -version        ->  xcodebuild 0.1.0
 otool -L build/release/xcodebuild        ->  CoreFoundation + libSystem only
 ```
 

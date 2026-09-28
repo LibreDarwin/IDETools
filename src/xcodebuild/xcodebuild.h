@@ -39,7 +39,10 @@
 
 #include <stddef.h>
 
-#define XCODEBUILD_VERSION "1.0.0"
+/* This project's own version, kept in step with CURRENT_PROJECT_VERSION in
+ * project.pbxproj, the loader's PROJECT: marker, and the release tag.  It is
+ * not an Xcode build number and does not claim to be one. */
+#define XCODEBUILD_VERSION "0.1.0"
 #define XCODEBUILD_DEFAULT_DEVELOPER_DIR "/Library/Developer/CommandLineTools"
 #define SDK_CFG ".xcdev.dat"
 

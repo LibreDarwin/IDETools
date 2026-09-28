@@ -51,12 +51,23 @@ static char * const *loader_argv;
 
 /*
  * Apple emits these two from its versioned-dylib build step.  They are part of
- * the loader's exported surface, so a clean-room build reproduces the names and
- * keeps the values coherent with the project's own 1.0.0 version.
+ * the loader's exported surface, so a clean-room build reproduces the names.
+ *
+ * The string is Apple's "@(#)PROGRAM:<prog>  PROJECT:<Product>-<build>" shape,
+ * but the two halves do not mean the same thing for us.  In Apple both are one
+ * Xcode build number: PROJECT:IDETools-24902 names build 24902 of the IDETools
+ * product.  Reproducing "IDETools-" here would claim to be an IDETools build,
+ * in Apple's namespace, at a version Apple never shipped -- so the version
+ * half says what this actually is, and the product half names this project
+ * rather than Apple's.  The dylib's own install-name versions stay 1.0.0 in
+ * the Makefile, matching Apple, which pins them there for the same reason.
+ *
+ * Kept in step with CURRENT_PROJECT_VERSION in project.pbxproj and the
+ * v0.1.0 tag; see docs/IDETools.md for the version scheme.
  */
-double xcodebuildLoaderVersionNumber = 1.0;
+double xcodebuildLoaderVersionNumber = 0.1;
 const unsigned char xcodebuildLoaderVersionString[] =
-        "@(#)PROGRAM:xcodebuildLoader  PROJECT:IDETools-1.0.0";
+        "@(#)PROGRAM:xcodebuildLoader  PROJECT:LibreDarwin-0.1.0";
 
 /**
  * @func env_set -- truthiness of an environment variable
