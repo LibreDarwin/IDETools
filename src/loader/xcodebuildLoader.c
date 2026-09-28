@@ -7,7 +7,7 @@
  * Apple's loader keeps the tool's entry point in a dylib rather than in the
  * executable, which is what makes the AddressSanitizer relaunch possible: the
  * tool can exec() itself with DYLD_IMAGE_SUFFIX=_asan and dyld will then bind
- * every one of our dylibs to its _asan twin.  See local/IDETools.md for the
+ * every one of our dylibs to its _asan twin.  See docs/IDETools.md for the
  * reverse-engineered behaviour this reproduces.
  *
  * Apple reaches for DVTFoundation and Xcode3Core here.  Neither exists in this
