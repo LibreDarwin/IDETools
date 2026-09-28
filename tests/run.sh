@@ -41,6 +41,14 @@ is() {
 	fi
 }
 
+isnt() {
+	if [ "$2" != "$3" ]; then
+		ok "$1"
+	else
+		no "$1" "expected anything but [$2]"
+	fi
+}
+
 if [ ! -x "$TOOL" ]; then
 	echo "test: no such tool: $TOOL" >&2
 	echo "test: run 'make' first, or set TOOL=" >&2
@@ -51,6 +59,19 @@ fi
 setting() {
 	_p=$1; _k=$2; shift 2
 	"$TOOL" -project "$_p" -showBuildSettings "$@" 2>/dev/null |
+	    sed -n "s/^    $_k = //p" | head -1
+}
+
+# setting_dev <devdir> <project> <key> [extra args...] -> value of <key>
+#
+# -sdk resolves a name inside the developer directory in force.  A test that
+# finds an SDK in one developer directory and asks for it by name while
+# another is in force is not testing -sdk; it is testing which directory
+# happened to be selected.  This pins the directory so the name means
+# something.
+setting_dev() {
+	_d=$1; _p=$2; _k=$3; shift 3
+	DEVELOPER_DIR="$_d" "$TOOL" -project "$_p" -showBuildSettings "$@" 2>/dev/null |
 	    sed -n "s/^    $_k = //p" | head -1
 }
 
@@ -137,6 +158,12 @@ else
 
 		tag=$(basename "$sdk")
 
+		# The developer directory this SDK lives in, for the -sdk
+		# assertions below.  Derived from the path rather than
+		# remembered from the scan, so it stays right if the set of
+		# SDKs chosen above changes.
+		sdkroot=${sdk%%/Platforms/*}
+
 		# SDKROOT on the command line is the case the ordering fix exists
 		# for: it used to be applied before SDKROOT was resolved, and lost.
 		is "$tag: SDK_DIR is the SDK SDKROOT names" \
@@ -145,6 +172,28 @@ else
 		    "$want_name" "$(setting "$PROJ" SDK_NAME "SDKROOT=$sdk")"
 		is "$tag: SDK_VERSION is that SDK's own version" \
 		    "$want_ver" "$(setting "$PROJ" SDK_VERSION "SDKROOT=$sdk")"
+
+		# -sdk has to outrank the SDKROOT the project wrote.  This
+		# project hardcodes MacOSX.Internal.sdk, so -sdk naming any
+		# SDK at all is enough to see whether the merge put the
+		# project's back.  SDK_NAME is expected to be the requested
+		# SDK's own CanonicalName, read from its SDKSettings.plist,
+		# which pins down *which* SDK answered.
+		#
+		# Run with DEVELOPER_DIR on the directory this SDK came from,
+		# so the name resolves and the assertion is about -sdk.
+		#
+		# SDK_DIR is only checked for having moved, not for matching
+		# the loop's own $sdk: the unversioned entries are the real
+		# directories and the versioned ones beside them the
+		# symlinks, so asking by CanonicalName lands on a path whose
+		# spelling depends on that layout rather than on -sdk.
+		is "$tag: -sdk names the SDK it selected" \
+		    "$want_name" \
+		    "$(setting_dev "$sdkroot" "$PROJ" SDK_NAME -sdk "$want_name")"
+		isnt "$tag: -sdk moves SDK_DIR off the project's own" \
+		    "$(setting_dev "$sdkroot" "$PROJ" SDK_DIR)" \
+		    "$(setting_dev "$sdkroot" "$PROJ" SDK_DIR -sdk "$want_name")"
 
 		# The numbered forms are derived, so they are checked against the
 		# rule rather than copied: each part padded to two and run
@@ -359,6 +408,75 @@ is "TARGET_BUILD_DIR is where the project said" \
 is "CODESIGNING_FOLDER_PATH follows the products" \
     "$cfgbuild/$(setting "$PROJ" FULL_PRODUCT_NAME)" \
     "$(setting "$PROJ" CODESIGNING_FOLDER_PATH)"
+
+# The strings step is per-architecture.  macOS has no per-architecture strings
+# step, so Apple leaves the slot literally undefined.  Observed constant across
+# Debug/Release and across ARCHS=arm64, x86_64 and both -- so the expectation is
+# the literal word, not a guess about which arch is "current".
+is "STRINGSDATA_DIR carries the undefined-architecture slot" \
+    "$objroot/$pname.build/$cfg/$tname.build/Objects-normal/undefined_arch" \
+    "$(setting "$PROJ" STRINGSDATA_DIR)"
+
+# The built products directory goes on the FRONT of both search paths, which is
+# how one target finds a framework another has just built.  The separator lives
+# in the prefix, so with nothing declared by the project the value ends in a
+# space -- that trailing space is part of Apple's value, not noise.
+is "FRAMEWORK_SEARCH_PATHS starts with the products directory" \
+    "$cfgbuild " "$(setting "$PROJ" FRAMEWORK_SEARCH_PATHS)"
+is "HEADER_SEARCH_PATHS starts with the products include directory" \
+    "$cfgbuild/include $projdir/src/common $projdir/src/xcodebuild" \
+    "$(setting "$PROJ" HEADER_SEARCH_PATHS)"
+
+# The project declares both source directories and neither products path, so
+# the two above are entirely Apple's doing.  Turn the switch off and they must
+# come back empty, which is the half that proves the prepend is the switch's
+# doing rather than an accident of this project.
+nosw="$(setting "$PROJ" HEADER_SEARCH_PATHS ENABLE_DEFAULT_HEADER_SEARCH_PATHS=NO)"
+is "with the switch off, HEADER_SEARCH_PATHS is just the project's" \
+    "$projdir/src/common $projdir/src/xcodebuild" "$nosw"
+noswf="$(setting "$PROJ" FRAMEWORK_SEARCH_PATHS ENABLE_DEFAULT_HEADER_SEARCH_PATHS=NO)"
+is "with the switch off, FRAMEWORK_SEARCH_PATHS is empty" \
+    "" "$noswf"
+
+# Apple's own CoreBuildSystem.xcspec defines ARCHS_BASE as $(ARCHS), not
+# $(ARCHS_STANDARD).  This project narrows ARCHS to $(NATIVE_ARCH_ACTUAL), so
+# the two disagree and a hardcoded standard list reports a fat binary's worth of
+# architectures for a thin one.
+is "ARCHS_BASE follows ARCHS, not the standard list" \
+    "$(setting "$PROJ" ARCHS)" "$(setting "$PROJ" ARCHS_BASE)"
+
+# A command-line CONFIGURATION_BUILD_DIR= has to move everything derived from
+# it.  "The command line is the last word" means last in the input, not last
+# thing to happen: deriving before the overrides land left the products
+# directory reporting where it was before, while the key the user typed showed
+# the new value -- so the two disagreed.
+is "a command-line CONFIGURATION_BUILD_DIR moves the products directory" \
+    "/tmp/ovr-prod" \
+    "$(setting "$PROJ" BUILT_PRODUCTS_DIR CONFIGURATION_BUILD_DIR=/tmp/ovr-prod)"
+is "and moves the search paths built on it" \
+    "/tmp/ovr-prod " \
+    "$(setting "$PROJ" FRAMEWORK_SEARCH_PATHS CONFIGURATION_BUILD_DIR=/tmp/ovr-prod)"
+
+# TOOLCHAINS is the toolchain's bundle identifier, which its own
+# ToolchainInfo.plist records.  The directory is called XcodeDefault.xctoolchain;
+# reporting that name is reporting the wrong thing.
+#
+# Skipped when the resolved toolchain has no ToolchainInfo.plist -- the
+# CommandLineTools MacOSX.xctoolchain is an empty directory, and this suite is
+# meant to run without an Xcode installed.  The assertion is about reading the
+# plist, so with no plist there is nothing to assert.
+tcroot="$(setting "$PROJ" TOOLCHAIN_ROOT)"
+tcplist="$tcroot/ToolchainInfo.plist"
+if [ -f "$tcplist" ]; then
+    is "TOOLCHAINS is the toolchain's identifier, not its directory name" \
+        "$(/usr/bin/plutil -extract Identifier raw "$tcplist" 2>/dev/null)" \
+        "$(setting "$PROJ" TOOLCHAINS)"
+    is "TOOLCHAINS is not just the toolchain's name" \
+        "" "$([ "$(setting "$PROJ" TOOLCHAINS)" = "$(basename "$tcroot" .xctoolchain)" ] && echo same)"
+else
+    skipt "TOOLCHAINS is the toolchain's identifier" \
+        "$tcroot has no ToolchainInfo.plist"
+fi
 
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

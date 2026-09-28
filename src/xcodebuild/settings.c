@@ -49,6 +49,7 @@
 #include "sdkpath.h"
 #include "xcodebuild.h"
 #include "ini.h"
+#include "cfplist.h"
 
 /* ------------------------------------------------------------------ */
 /* Settings table                                                       */
@@ -268,6 +269,7 @@ typedef struct {
 typedef struct {
 	char *name;
 	char *version;
+	char *identifier;
 } toolchain_info;
 
 static int sdk_ini_handler(void *user, const char *section, const char *name, const char *value)
@@ -537,8 +539,44 @@ void settings_sync_sdk_root(settings_table *t)
 static int read_toolchain_info(const char *path, toolchain_info *out)
 {
 	char info_path[PATH_MAX];
+	int got_ini;
+
 	snprintf(info_path, sizeof(info_path), "%s/info.ini", path);
-	return ini_parse(info_path, toolchain_ini_handler, out) == -1 ? -1 : 0;
+	got_ini = (ini_parse(info_path, toolchain_ini_handler, out) != -1);
+
+	/*
+	 * The identifier is not in info.ini.  TOOLCHAINS is the
+	 * toolchain's *bundle* identifier -- com.apple.dt.toolchain.
+	 * XcodeDefault -- which is the directory's name with a prefix, and
+	 * getting it from the name would be a guess that only ever happens
+	 * to be right for the toolchain Apple ships.  It is written down in
+	 * ToolchainInfo.plist, so read it from there.
+	 *
+	 * This is the same read read_sdk_info() does for an SDK, and for
+	 * the same reason: the value belongs to the toolchain, not to us.
+	 */
+	{
+		char plist_path[PATH_MAX];
+		CFDictionaryRef d;
+
+		snprintf(plist_path, sizeof(plist_path), "%s/ToolchainInfo.plist",
+		    path);
+		d = cfplist_read(plist_path);
+		if (d != NULL) {
+			out->identifier = cfplist_string(d, "Identifier");
+			CFRelease(d);
+		}
+
+		/*
+		 * Either file is optional and either one answering counts
+		 * as a read.  Apple's own XcodeDefault.xctoolchain has no
+		 * info.ini at all -- its identifier is the plist and
+		 * nothing else -- so returning the ini result on its own
+		 * reported failure for precisely the toolchain whose
+		 * identifier this function exists to supply.
+		 */
+		return (got_ini || out->identifier != NULL) ? 0 : -1;
+	}
 }
 
 /* Build a target triple from a deployment target version + arch, mirroring
@@ -667,7 +705,16 @@ int settings_load_defaults(settings_table *t, const char *devpath,
 	settings_defaults_set(t, "APPLY_RULES_IN_COPY_FILES", "NO");
 	settings_defaults_set(t, "APPLY_RULES_IN_COPY_HEADERS", "NO");
 	settings_defaults_set(t, "APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING", "YES");
-	settings_defaults_set(t, "ARCHS_BASE", "arm64 x86_64");
+	/*
+	 * ARCHS_BASE is what ARCHS is built from before a project narrows
+	 * it, and Apple's own CoreBuildSystem.xcspec defines it as
+	 * $(ARCHS) -- not $(ARCHS_STANDARD).  Those differ exactly when a
+	 * project narrows ARCHS, which this one does
+	 * (ARCHS = $(NATIVE_ARCH_ACTUAL)), so hardcoding the standard
+	 * list here reported a fat binary's worth of architectures for a
+	 * thin one.
+	 */
+	settings_defaults_set(t, "ARCHS_BASE", "$(ARCHS)");
 	settings_defaults_set(t, "ARCHS_STANDARD", "arm64 x86_64");
 	settings_defaults_set(t, "ARCHS_STANDARD_32_64_BIT", "arm64 x86_64 i386");
 	settings_defaults_set(t, "ARCHS_STANDARD_32_BIT", "i386");
@@ -1070,7 +1117,7 @@ settings_defaults_set(t, "ALWAYS_SEARCH_USER_PATHS", "YES");
 	settings_defaults_set(t, "SWIFT_VERSION", "5.0");
 	settings_defaults_set(t, "TARGET_NAME", "");
 	settings_defaults_set(t, "TARGET_TEMP_DIR", "");
-	settings_defaults_set(t, "TOOLCHAINS", tc.name ? tc.name : (toolchain ? toolchain : sdkname));
+	settings_defaults_set(t, "TOOLCHAINS", tc.identifier ? tc.identifier : (tc.name ? tc.name : (toolchain ? toolchain : sdkname)));
 	settings_defaults_set(t, "TOOLCHAIN_ROOT", tc_path);
 	settings_defaults_set(t, "UNIVERSAL_BINARY", "NO");
 	settings_defaults_set(t, "VALID_ARCHS", sdk.default_arch ? sdk.default_arch : "arm64");

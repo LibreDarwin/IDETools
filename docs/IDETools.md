@@ -374,11 +374,11 @@ The small, self-contained neighbours worth considering as separate repos later:
    decided, and deliberately not acted on.
 7. ❌ `xcindex-test` — recorded, not planned.
 8. ✅ Regression tests in `tests/run.sh`, run by `make test` and `bmake test`.
-   56 assertions over the four bugs above plus the unresolvable-`SDKROOT` case
-   they turned up, each checked against the pbxproj, an SDK's own plist, or a
-   rule read off Apple rather than against the tool itself. Against `ba8ef6c`
-   the same file fails 17, and against the working tree before these four fixes
-   it fails 10, so it discriminates on each of them.
+   70 assertions over the bugs above plus the unresolvable-`SDKROOT` case they
+   turned up, each checked against the pbxproj, an SDK's own plist, a
+   toolchain's own plist, or a rule read off Apple rather than against the tool
+   itself. Against `ba8ef6c` the same file fails 17, and against the working
+   tree at `8bcd2ce` it fails 13, so it discriminates on each of them.
 
 #### Status verdict — 2026-09-28
 
@@ -389,7 +389,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 87 absent and 11 differing, both counted per key with both tools on the same `DEVELOPER_DIR`; the bugs the measurement exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 87 absent, both counted per key with both tools on the same `DEVELOPER_DIR`; no value differences at all where the SDK resolves, the 6 on the default build being Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -470,17 +470,17 @@ pointed at the *same* Developer directory (`/Applications/Xcode.app/Contents/
 Developer`) so that the `DEVELOPER_*` settings cannot differ by construction:
 
 ```
-settings emitted   apple 458, ours 421
-  shared            360
+settings emitted   apple 458, ours 422
+  shared            365
   only in Apple      87
   only in ours       51
-  shared, differing  11
+  shared, differing   6
 ```
 
 (Count settings, not lines: raw line counts shift by a few depending on how the
 trailing newline is handled, and a strict four-space regex silently drops keys.
 The figures above come from matching `^\s*KEY = value` on either side; they
-reconcile: 87 + 360 = 447 and 51 + 360 = 411, plus the 11 whose values differ,
+reconcile: 87 + 365 = 452 and 51 + 365 = 416, plus the 6 whose values differ,
 which is 458 and 422 counting each differing key once on the shared side.)
 
 Pointing our tool at a *different* Developer directory than Apple's inflates
@@ -488,14 +488,67 @@ this by 10: `DEVELOPER_DIR` and the nine paths under it are then correctly
 reporting the directory we were given, and Apple is correctly reporting its own.
 Those are not differences, so the matched comparison above is the one to read.
 
-Earlier in the day, before the three fixes below, the matched figures were
+#### Six differences remain, and none of them are ours
+
+The six that survive are all the same thing: this project hardcodes
+`SDKROOT = MacOSX.Internal.sdk`, no such SDK exists, and Apple's toolchain falls
+back to internal-SDK defaults when the SDK it was pointed at cannot be found.
+
+```
+  DYNAMIC_LIBRARY_EXTENSION              Apple=so          ours=dylib
+  RPATH_ORIGIN                            Apple=$ORIGIN     ours=@loader_path
+  PLATFORM_USES_DSYMS                     Apple=NO          ours=YES
+  TAPI_VERIFY_MODE                        Apple=ErrorsOnly  ours=Pedantic
+  PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT Apple=YES        ours=NO
+  PLATFORM_REQUIRES_SWIFT_MODULEWRAP      Apple=YES         ours=NO
+```
+
+Reproduce it: give both tools `-sdk macosx`, where the SDK resolves, and every
+one of the six agrees.
+
+```
+settings emitted   apple 484, ours 422
+  shared            393
+  only in Apple      91
+  only in ours       29
+  shared, differing   0
+```
+
+Zero differing keys. The honest conclusion is that the six are not defects in
+this tool but evidence that it does not reproduce a fallback for a missing SDK,
+and hardcoding the fallback values would be a second way to be wrong — it would
+break the resolvable-SDK case above, which currently matches. What is left to
+do about the fallback itself is a separate question, deliberately not answered
+here.
+
+The 22 keys that moved from "only in ours" (51 → 29) between the two tables
+are not SDK identity keys, which is what the first reading of the pair suggested.
+They are the groups Apple's fallback suppresses: code signing
+(`AD_HOC_CODE_SIGNING_ALLOWED`, `CODE_SIGNING_REQUIRED`, `CODE_SIGN_IDENTITY*`,
+`ENTITLEMENTS_DESTINATION`), the sanitiser and TAPI flags (`KASAN_*`,
+`TAPI_USE_SRCROOT`), the deployment-target suggestions
+(`DEPLOYMENT_TARGET_SUGGESTED_VALUES`, `RECOMMENDED_MACOSX_DEPLOYMENT_TARGET`,
+`SDK_PRODUCT_BUILD_VERSION`, `LLVM_TARGET_TRIPLE_OS_VERSION_*`), and a handful of
+internal sentinels (`_BOOL_*`, `_IS_EMPTY_`, `_DEVELOPMENT_TEAM_IS_EMPTY`,
+`_MACOSX_DEPLOYMENT_TARGET_IS_EMPTY`). We emit all of them regardless of whether
+the SDK resolved; Apple emits none of them in the fallback. So on the default
+build these 22 are, like the 6, evidence about Apple's fallback rather than
+claims we have not checked — and the practical consequence is that the
+"we emit keys Apple does not" list is 29 keys long on a build where the SDK
+resolves, not 51.
+
+Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
 
-| | before | after |
-| --- | --- | --- |
-| only in Apple | 93 | 87 |
-| shared, differing | 33 | 11 |
-| shared, matching | 332 | 360 |
+| | before | after (project default) | after (`-sdk macosx`) |
+| | --- | --- | --- |
+| only in Apple | 93 | 87 | 91 |
+| shared, differing | 33 | 6 | 0 |
+| shared, matching | 332 | 365 | 393 |
+
+The two columns differ only because of the missing SDK: the default build
+cannot resolve one, so it is the weaker of the two measurements and should not
+be read as parity.
 
 The two outright bugs found earlier in this document were fixed first, which is
 what the "419/52/49" figures below refer to.
@@ -624,15 +677,61 @@ both counts and the whole chain pointed one level too high, with a capitalised
 Together these four fixes took the matched comparison from 33 differing settings
 to 11, and from 332 matching to 360.
 
+##### Five settings the measurement named, and a sixth bug hiding behind one
+
+The 11 that survived were chased to five keys and two defects, and the first
+thing that had to be settled was which of the 11 were worth fixing at all.
+
+Six of them exist only because `SDKROOT = MacOSX.Internal.sdk` names nothing.
+Apple falls back to internal-SDK defaults when the SDK cannot be found, and we
+report the toolchain's defaults instead. The way to tell the two groups apart is
+to re-run the comparison with `-sdk macosx`, where the SDK resolves: the six
+fallback keys agree there, and five do not. So five were ours:
+
+- **`ARCHS_BASE` was `arm64 x86_64`, Apple says `$(ARCHS)`.** Not a host-architecture
+  narrowing at all, as it first read — it is the standard list, spelled
+  `ARCHS_BASE` in `CoreBuildSystem.xcspec`.
+- **`TOOLCHAINS` was `MacOSX`, Apple says `com.apple.dt.toolchain.XcodeDefault`.**
+  The identifier is written in `ToolchainInfo.plist`, and deriving it from the
+  directory name is a guess that only ever happens to be right for the one
+  toolchain Apple ships. `read_toolchain_info()` now reads it, which is the
+  companion of the `read_sdk_info()` read the SDK fix already relied on.
+- **`STRINGSDATA_DIR` was `Objects-normal`, Apple says `Objects-normal/undefined_arch`.**
+  The `undefined_arch` component is Apple's name for "not the host's
+  architecture", and it is not conditional on it: the value is the same for
+  `ARCHS=arm64`, `ARCHS=x86_64`, and `ARCHS=arm64 x86_64`, so the suffix does not
+  track `ARCHS` the way a reading of the name suggests.
+- **`FRAMEWORK_SEARCH_PATHS` and `HEADER_SEARCH_PATHS`** were missing the
+  `$(BUILT_PRODUCTS_DIR)` entries that `ENABLE_DEFAULT_HEADER_SEARCH_PATHS`
+  adds. Both now prepend after the merge, and with the switch off they are the
+  project's own values again.
+
+`read_toolchain_info()` also had a return value that was wrong for the
+toolchain it exists to describe. It reported failure whenever `info.ini` was
+absent — and Apple's `XcodeDefault.xctoolchain` has no `info.ini`, only the
+plist. Either file answering now counts as a read.
+
+The sixth defect was not a setting at all. `-sdk` seeded the defaults and was
+then overruled by the project's own `SDKROOT`, so against a project that
+hardcodes `MacOSX.Internal.sdk` the build used the internal SDK while appearing
+to ask for another — the same precedence bug as `SETTING=value`, one level up.
+`-sdk` now outranks the merge, resolved to a path first so that the
+name-to-path step downstream uses the SDK that was asked for rather than the one
+the merge left behind.
+
+With those, the project default's 6 differences are all Apple's fallback, and
+`-sdk macosx` differs in nothing at all. The fixed point moved to `178264`
+bytes, sha256 `a42e08e8e2efbb10d3849307b8c180619984d939548608da1c9215739bf023af`.
+
 ##### Fixed point
 
-The self-build fixed point still holds byte-identically: `197576` bytes, sha256
-`38adbd0e5f2f53a3ea0ad635b8ddc2371955f7a88f9b7dda7f92768b0cf7e1ee`, two
-consecutive runs of the same artifact. The earlier `3e19feaaefd15aa6` figure is
-the commit `v0.1.0`; this one is the working tree with these four fixes. The
-`xcodebuild.c` diff is ~190 lines of re-indent because the pbxproj had to be
-parsed before the defaults load, which moved its one level of nesting; `-w` shows
-the real change as 109 lines.
+The self-build fixed point holds byte-identically: two consecutive runs of the
+same artifact. The earlier `3e19feaaefd15aa6` figure is the commit `v0.1.0`, and
+`38adbd0e5f2f53a3ea0ad635b8ddc2371955f7a88f9b7dda7f92768b0cf7e1ee` was the
+working tree with the four fixes above, at `197576` bytes. The current figure is
+in the subsection above. The `xcodebuild.c` diff is ~190 lines of re-indent
+because the pbxproj had to be parsed before the defaults load, which moved its
+one level of nesting; `-w` shows the real change as 109 lines.
 
 Note that a self-build overwrites the tool in place: `CONFIGURATION_BUILD_DIR` is
 `./build/release`, the same directory the tool is installed in. Back it up before
@@ -644,47 +743,51 @@ The rest of the gap is systematic, not incidental:
   `.` against `/Users/…/IDETools`, `BUILD_DIR` `./build` against an absolute
   path. Ours also uses `./build/Debug` where Apple uses
   `…/build/…/Release-iphoneos`-style derived directories.
-- **`ARCHS_BASE` is `arm64 x86_64`, Apple says `arm64`** — we do not narrow to
-  the host architecture.
-- **`RPATH_ORIGIN` `@loader_path` vs `$ORIGIN`; `TOOLCHAINS` `MacOSX` vs
-  `com.apple.dt.toolchain.XcodeDefault`; `DYNAMIC_LIBRARY_EXTENSION` `dylib`
-  vs `so`.**
-- **93 settings missing outright**, including `ANDROID_DEPLOYMENT_TARGET`,
+- **87 settings missing outright**, including `ANDROID_DEPLOYMENT_TARGET`,
   `CCHROOT`, `LEGACY_DEVELOPER_DIR`, `DUMP_DEPENDENCIES_OUTPUT_PATH`, and a
   family of `*_DEPENDENCY_INFO_FILE` / `*_MAP_FILE_PATH` linker settings.
-- **52 we emit that Apple does not**, mostly code-signing and Clang-warning
+- **51 we emit that Apple does not**, mostly code-signing and Clang-warning
   defaults (`AD_HOC_CODE_SIGNING_ALLOWED`, `CLANG_ENABLE_MODULES`,
   `CLANG_WARN_*`).
 
+The value-level differences that used to sit alongside these — `ARCHS_BASE`,
+`TOOLCHAINS`, `STRINGSDATA_DIR`, the two search paths — are fixed above, and
+with them the only value differences left anywhere are the six that are Apple's
+fallback for a missing SDK.
+
 So the honest status is: **behavioural parity is not met, and the gap is
-measured rather than guessed.** The two bugs that measurement exposed are fixed,
-and so is the largest single family of differences since; what remains is a long
-tail. Of Apple's 458 settings, 87 are absent from ours and 11 more carry a
-different value — 98 do not match, before counting the 51 keys we emit that Apple
-never does. Certifying parity means diffing `-showBuildSettings`, `-list` and the
-emitted compile/link command lines against Apple's binary across a matrix of
-options and targets, and closing the deltas above. Nothing in the fixed-point
-evidence substitutes for this: a fixed point proves self-consistency, and ours
-agreeing with the tree's tool only shows two implementations of the same
-`sdkpath.c` agree with each other.
+measured rather than guessed.** Every value difference that survives measurement
+is now accounted for: the six that remain on the project default are Apple's
+fallback for an SDK that does not exist, and they agree with us once the SDK
+does. What remains is coverage, not disagreement. Of Apple's 458 settings, 87
+are absent from ours, and 6 carry a different value on the default build only —
+before counting the 51 keys we emit that Apple never does. Certifying parity
+means diffing `-showBuildSettings`, `-list` and the emitted compile/link
+command lines against Apple's binary across a matrix of options and targets, and
+closing the deltas above. Nothing in the fixed-point evidence substitutes for
+this: a fixed point proves self-consistency, and ours agreeing with the tree's
+tool only shows two implementations of the same `sdkpath.c` agree with each
+other.
 
 The next candidates, in the order they are worth doing, all come from the same
 measurement rather than from reading code:
 
-- **The 11 differing settings**, which are now 11 individual keys rather than
-  families: `ARCHS_BASE` (not narrowed to the host architecture),
-  `DYNAMIC_LIBRARY_EXTENSION`, `RPATH_ORIGIN`, `TOOLCHAINS`,
-  `PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT`, `PLATFORM_REQUIRES_SWIFT_MODULEWRAP`,
-  `PLATFORM_USES_DSYMS`, `TAPI_VERIFY_MODE`, `FRAMEWORK_SEARCH_PATHS`,
-  `HEADER_SEARCH_PATHS`, and `STRINGSDATA_DIR`, which Apple makes per-architecture
-  (`Objects-normal/undefined_arch` where we emit the un-suffixed
-  `Objects-normal`).
 - **The 87 absent settings**, mostly one family of linker and cache paths
   (`CACHE_ROOT`, `LD_MAP_FILE_PATH`, `CMPILATION_CACHE_CAS_PATH`,
   `SDK_STAT_CACHE_*`, `SDK_DIR_<name>`) that are per-SDK conveniences rather than
   87 separate decisions.
 - **The 51 we emit that Apple does not**, which need auditing rather than adding:
-  each one is a claim about Apple's behaviour that has not been checked.
+  each one is a claim about Apple's behaviour that has not been checked. On a
+  build where the SDK resolves this is 29, and the 22 that disappear with the
+  missing SDK are groups Apple's fallback suppresses wholesale rather than
+  anything about ours — see the list above.
+- **What Apple does about an unresolvable `SDKROOT`.** It does not error; it
+  substitutes internal-SDK defaults. We report the toolchain's own defaults
+  instead, which is defensible but is a difference in kind, not degree, and is
+  the only place where the two tools answer a different question rather than
+  reporting a different number. It is left undone on purpose: doing it by
+  hardcoding the six values would re-break the resolvable case, which currently
+  matches exactly.
 - **`DEVELOPER_DIR` resolution** when it is unset, where we fall back to
   CommandLineTools and Apple falls back to `xcode-select`. Comparing the two
   tools with different `DEVELOPER_DIR` values set inflates the diff by 10 keys

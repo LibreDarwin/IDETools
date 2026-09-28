@@ -480,6 +480,17 @@ static void apply_setting_overrides(settings_table *t,
 	}
 }
 
+/* Prepend a search-path element to a possibly empty list.  Apple keeps the
+ * separator in the prefix, so an empty list comes out with a trailing space
+ * rather than nothing -- matching that keeps the value byte-identical. */
+static void prefix_search_path(char *out, size_t outsz, const char *prefix,
+    const char *list)
+{
+	if (list == NULL)
+		list = "";
+	snprintf(out, outsz, "%s%s", prefix, list);
+}
+
 /*
  * The build directories, derived from the settings that survive the merge.
  *
@@ -555,6 +566,42 @@ static void derive_build_dirs(settings_table *t)
 			}
 			settings_set(t, "DWARF_DSYM_FOLDER_PATH", cfg_build);
 		}
+
+		/*
+		 * The built products directory goes on the front of both
+		 * search paths, which is how one target finds a framework
+		 * another has just built.  ENABLE_DEFAULT_HEADER_SEARCH_PATHS
+		 * gates it: with it off Apple leaves both lists exactly as
+		 * the project wrote them, and with it on it prepends to
+		 * whatever the project wrote rather than replacing it, so
+		 * FRAMEWORK_SEARCH_PATHS=/custom/fw comes out as
+		 * "<products> /custom/fw".
+		 *
+		 * The prepend is unconditional, so a project that already
+		 * lists the include directory gets it twice -- that is what
+		 * Apple does, and matching it beats second-guessing it.
+		 * It has to happen here rather than at the seed because the
+		 * project has to have been read first: the value being
+		 * prepended to is the project's own.
+		 */
+		{
+			const char *dhsp = settings_get(t,
+			    "ENABLE_DEFAULT_HEADER_SEARCH_PATHS");
+			const char *hsp = settings_get(t, "HEADER_SEARCH_PATHS");
+			const char *fsp = settings_get(t, "FRAMEWORK_SEARCH_PATHS");
+			char path[PATH_MAX], out[PATH_MAX];
+
+			if (dhsp != NULL && strcasecmp(dhsp, "YES") == 0) {
+				snprintf(path, sizeof(path), "%s/include ",
+				    cfg_build);
+				prefix_search_path(out, sizeof(out), path, hsp);
+				settings_set(t, "HEADER_SEARCH_PATHS", out);
+
+				snprintf(path, sizeof(path), "%s ", cfg_build);
+				prefix_search_path(out, sizeof(out), path, fsp);
+				settings_set(t, "FRAMEWORK_SEARCH_PATHS", out);
+			}
+		}
 	}
 
 	/* A target's own directory, hanging off the configuration's. */
@@ -574,6 +621,17 @@ static void derive_build_dirs(settings_table *t)
 
 		snprintf(sub, sizeof(sub), "%s/Objects-normal", tgt);
 		settings_set(t, "OBJECT_FILE_DIR_normal", sub);
+
+		/*
+		 * The strings step is per-architecture, and macOS has no
+		 * per-architecture strings step, so Apple leaves the slot
+		 * literally undefined rather than filling it with an arch
+		 * it does not use.  Verified constant across Debug and
+		 * Release and across ARCHS=arm64 / x86_64 / both.  Only
+		 * macOS is verified; a platform that really does split
+		 * per architecture would want the arch here instead.
+		 */
+		snprintf(sub, sizeof(sub), "%s/Objects-normal/undefined_arch", tgt);
 		settings_set(t, "STRINGSDATA_DIR", sub);
 
 		snprintf(sub, sizeof(sub), "%s/DerivedSources", tgt);
@@ -713,23 +771,15 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 				settings_set(t, "TARGET_BUILD_DIR", bd);
 
 				/*
-				 * Apple looks for frameworks beside
-				 * the products by default, which is
-				 * how one target finds a framework
-				 * another has just built.
+				 * FRAMEWORK_SEARCH_PATHS is not seeded
+				 * here.  Apple puts the products directory
+				 * on the front of whatever the project
+				 * wrote, so doing it here -- before the
+				 * merge -- would prepend to the seed
+				 * rather than to the project, and the
+				 * project would never get a say.  It is
+				 * done in derive_build_dirs() instead.
 				 */
-				{
-					const char *fsp = settings_get(t,
-					    "FRAMEWORK_SEARCH_PATHS");
-
-					/* Present but empty counts as
-					   unset: the defaults seed
-					   this key with "". */
-					if (fsp == NULL || *fsp == '\0')
-						settings_set(t,
-						    "FRAMEWORK_SEARCH_PATHS",
-						    bd);
-				}
 			}
 
 			/*
@@ -818,7 +868,41 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 		 * per target so that two targets that each compile a
 		 * main.c cannot write the same object, and neither can
 		 * tell its leftovers from the other's.
+		 *
+		 * The command line goes on first.  It is the last word
+		 * on any setting, but "last word" has to mean last word
+		 * in the *input*, not last thing to happen: deriving
+		 * before the overrides land means a
+		 * CONFIGURATION_BUILD_DIR= on the command line moves the
+		 * products directory and everything that reads it back --
+		 * BUILT_PRODUCTS_DIR, the search paths, the signing and
+		 * dSYM folders -- keeps reporting where it was before.
 		 */
+		apply_setting_overrides(t, opts);
+
+		/*
+		 * -sdk picks the SDK, so it outranks the SDKROOT the
+		 * project wrote.  It used to be used only to seed the
+		 * defaults, and the merge then put the project's own
+		 * SDKROOT back -- so `-sdk macosx` against a project
+		 * that hardcodes MacOSX.Internal.sdk built against the
+		 * internal SDK while appearing to ask for another.
+		 *
+		 * Resolved to a path here, because the block further down
+		 * turns a bare name into a path using whichever SDK_DIR
+		 * the merge left behind, which is the one -sdk was meant
+		 * to replace.
+		 */
+		if (opts != NULL && opts->sdk != NULL && *opts->sdk != '\0') {
+			char *sp = (opts->sdk[0] == '/') ?
+			    strdup(opts->sdk) : xt_find_sdk(devpath, opts->sdk);
+
+			if (sp != NULL) {
+				settings_set(t, "SDKROOT", sp);
+				free(sp);
+			}
+		}
+
 		derive_build_dirs(t);
 	} else if (project != NULL && opts->verbose) {
 		fprintf(stderr, "xcodebuild: warning: could not parse project '%s'\n", project);

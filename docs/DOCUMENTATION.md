@@ -632,6 +632,43 @@ what is established is that the plist layer underneath it matches.
 
 `devpath.c` is 55 lines for a single function; `xcpath.c` is 43.
 
+### 6.4 Setting precedence in `-showBuildSettings`
+
+The one ordering rule that everything else hangs off: **the command line is the
+last word on any setting, which means last in the input, not last thing to
+happen.** A value the user typed has to be in place before anything reads it
+back to derive another value. Two bugs came from getting that wrong, in
+opposite directions, and both were invisible until measured against Apple.
+
+- **Deriving after the merge, before the overrides.** The build-directory chain
+  is derived from `OBJROOT` and `CONFIGURATION_BUILD_DIR` after the project's own
+  settings are merged in, which is correct — but the `SETTING=value` overrides
+  were applied after *that*. So `CONFIGURATION_BUILD_DIR=/tmp/ovr` showed the
+  new value in the key the user typed and the old value everywhere derived from
+  it: `BUILT_PRODUCTS_DIR`, the search paths, the signing and dSYM folders. The
+  tool agreed with itself in the wrong direction. Overrides are now applied
+  before `derive_build_dirs()` as well as after, so both the key and everything
+  derived from it report the value that was asked for.
+- **`-sdk` overruled by the project.** `-sdk` used to seed the defaults and then
+  be overruled by the project's `SDKROOT`, the same defect one level up. Against
+  a project that hardcodes `SDKROOT = MacOSX.Internal.sdk`, `-sdk macosx` built
+  against the internal SDK while appearing to ask for another. `-sdk` now
+  outranks the merge. It is resolved to a path *first*, because the step that
+  turns a bare SDK name into a path does so using whichever `SDK_DIR` the merge
+  left behind — which is the SDK `-sdk` was meant to replace.
+
+The asymmetry between those two is the point. `-sdk` and `SETTING=value` are
+both the command line, so both win, but they land in different places: `-sdk`
+has to be converted to a path before it can be stored, and the conversion needs
+a developer directory, while `SETTING=value` carries its own value. Resolving
+`-sdk` up front is what lets the same downstream name-to-path step serve both.
+
+Both are tested against Apple's binary, and the second is what takes the
+project's comparison from 4 differing settings to 0. The remaining 6 on the
+default build are Apple's own fallback for an SDK that does not exist, not a
+precedence problem; `IDETools.md` records why reproducing them was deliberately
+not attempted.
+
 ---
 
 ## 7. Deferred: XCBuild / SwiftBuild
@@ -701,16 +738,17 @@ tests/run.sh              regression tests, POSIX sh, no Xcode required
 ```
 
 `make test` (or `bmake test`) builds and then runs `tests/run.sh`, which drives
-the built tool through 56 assertions covering the four bugs this comparison found.
+the built tool through 70 assertions covering the bugs this comparison found.
 Each expectation is derived from something other than the tool
 under test — the project's own `project.pbxproj`, an SDK's own
-`SDKSettings.plist`, or a rule read off Apple's output — so none of them can pass
-by agreeing with a shared bug, and none of them need Apple's binary to run. The
+`SDKSettings.plist`, a toolchain's own `ToolchainInfo.plist`, or a rule read off
+Apple's output — so none of them can pass by agreeing with a shared bug, and
+none of them need Apple's binary to run. The
 SDK cases are skipped when the machine has no SDKs; the project fixtures are
 copies of the real `IDETools.xcodeproj` with `defaultConfigurationName`
 rewritten, because a hand-written pbxproj is a second thing to get wrong. Run
-against the pre-fix commit `ba8ef6c` the same file reports 17 failures, so it
-discriminates rather than merely passing.
+against the pre-fix commit `ba8ef6c` the same file reports 17 failures, and
+against `8bcd2ce` 13, so it discriminates rather than merely passing.
 
 What got added after the rename, all on `master`:
 
