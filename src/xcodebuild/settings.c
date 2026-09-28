@@ -426,6 +426,97 @@ static int read_sdk_info(const char *path, sdk_info *out)
 	return ini_parse(info_path, sdk_ini_handler, out) == -1 ? -1 : 0;
 }
 
+/*
+ * SDK identity follows SDKROOT when a project points it somewhere else.
+ *
+ * The defaults name whichever SDK the scan happened to find, which is
+ * the right answer only for as long as SDKROOT still names that SDK.  A
+ * project that names an SDK of its own -- MacOSX.Internal.sdk, say --
+ * moves SDKROOT and leaves SDK_NAME, SDK_VERSION and SDK_DIR describing
+ * a different one entirely, so the settings meant to describe the SDK in
+ * use described the SDK that was merely found first.  A build then
+ * compiled against one SDK while claiming another.
+ *
+ * Reading back the SDK that SDKROOT names settles it, and it is the
+ * same read the defaults came from: Version and CanonicalName out of
+ * SDKSettings.plist, with SDK_DIR following SDKROOT.  A no-op when
+ * SDKROOT is still a name to be resolved, or when SDK_DIR already agrees
+ * with it.
+ */
+void settings_sync_sdk_root(settings_table *t)
+{
+	const char *root, *dir;
+	sdk_info info = {0};
+	char plist[PATH_MAX];
+
+	if (t == NULL)
+		return;
+
+	root = settings_get(t, "SDKROOT");
+	if (root == NULL || *root != '/')
+		return;
+
+	dir = settings_get(t, "SDK_DIR");
+	if (dir != NULL && strcmp(dir, root) == 0)
+		return;
+
+	snprintf(plist, sizeof(plist), "%s/SDKSettings.plist", root);
+	if (read_sdk_settings_plist(plist, &info) != 0)
+		return;
+
+	settings_set(t, "SDK_DIR", root);
+	if (info.name != NULL) {
+		settings_set(t, "SDK_NAME", info.name);
+		settings_set(t, "SDK_NAMES", info.name);
+	}
+	if (info.version != NULL) {
+		settings_set(t, "SDK_VERSION", info.version);
+
+		/*
+		 * The numbered forms, as Apple writes them: each part of
+		 * the version zero-padded to two digits and run together,
+		 * so 26.5 is 260500 and 15.4 is 150400.  MAJOR keeps only
+		 * the major part, padded to four, and MINOR stops at the
+		 * minor part -- which is the same number as ACTUAL for an
+		 * SDK versioned with two parts, as SDKs are.
+		 */
+		{
+			const char *p = info.version;
+			int part[3] = {0, 0, 0};
+			int i;
+
+			for (i = 0; i < 3 && *p != '\0'; i++) {
+				int v = 0;
+
+				while (*p >= '0' && *p <= '9')
+					v = v * 10 + (*p++ - '0');
+				part[i] = v;
+				if (*p == '.')
+					p++;
+			}
+
+			if (part[0] > 0) {
+				char buf[32];
+
+				snprintf(buf, sizeof(buf), "%02d%02d%02d",
+				    part[0], part[1], part[2]);
+				settings_set(t, "SDK_VERSION_ACTUAL", buf);
+
+				snprintf(buf, sizeof(buf), "%d0000", part[0]);
+				settings_set(t, "SDK_VERSION_MAJOR", buf);
+
+				snprintf(buf, sizeof(buf), "%02d%02d00",
+				    part[0], part[1]);
+				settings_set(t, "SDK_VERSION_MINOR", buf);
+			}
+		}
+	}
+
+	free(info.name);
+	free(info.version);
+	free(info.deployment_target);
+}
+
 static int read_toolchain_info(const char *path, toolchain_info *out)
 {
 	char info_path[PATH_MAX];

@@ -451,6 +451,36 @@ static char *detect_project(const xcodebuild_opts *opts, const char *project_dir
 /* ------------------------------------------------------------------ */
 
 /*
+ * Apply the command line's SETTING=value overrides.
+ *
+ * Called twice: once so that a SETTING on the command line wins over
+ * the project's, the xcconfig's and this tool's own defaults, and once
+ * more after the SDK identity is derived, so that it also wins over
+ * that derivation.  Applying a key twice is the same as applying it
+ * once.
+ */
+static void apply_setting_overrides(settings_table *t,
+    const xcodebuild_opts *opts)
+{
+	size_t i;
+
+	for (i = 0; i < opts->n_overrides; i++) {
+		const char *eq = strchr(opts->overrides[i], '=');
+		if (eq != NULL) {
+			char key[256];
+			char *expanded;
+
+			snprintf(key, sizeof(key), "%.*s",
+			         (int)(eq - opts->overrides[i]),
+			         opts->overrides[i]);
+			expanded = settings_expand(t, eq + 1);
+			settings_set(t, key, expanded);
+			free(expanded);
+		}
+	}
+}
+
+/*
  * The settings a target builds with.
  *
  * `target` is the target to resolve for, which is normally the one the
@@ -711,21 +741,6 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			fprintf(stderr, "xcodebuild: warning: could not read xcconfig '%s'\n", opts->xcconfig);
 	}
 
-	for (size_t i = 0; i < opts->n_overrides; i++) {
-		const char *eq = strchr(opts->overrides[i], '=');
-		if (eq != NULL) {
-			char key[256];
-			char *expanded;
-
-			snprintf(key, sizeof(key), "%.*s",
-			         (int)(eq - opts->overrides[i]),
-			         opts->overrides[i]);
-			expanded = settings_expand(t, eq + 1);
-			settings_set(t, key, expanded);
-			free(expanded);
-		}
-	}
-
 	/*
 	 * The developer directory's own furniture.  These describe the
 	 * toolchain in use, so they are this tree's paths rather than
@@ -768,6 +783,31 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 		    (root == NULL || *root != '/'))
 			settings_set(t, "SDKROOT", dir);
 	}
+
+	/*
+	 * With SDKROOT settled, name the SDK it points at.  This has to
+	 * follow the block above, which is what turns a name like
+	 * "macosx" into a path.
+	 */
+	settings_sync_sdk_root(t);
+
+	/*
+	 * The command line's SETTING=value overrides are the last word
+	 * on any setting, so they are applied after everything above --
+	 * they used to be applied before the developer directory's paths
+	 * and the SDKROOT resolution, which quietly lost an explicit
+	 * SDKROOT to whichever SDK the scan had found.
+	 *
+	 * They go on both sides of the SDK sync above, because an
+	 * SDKROOT given here is exactly the case the sync has to follow:
+	 * setting SDKROOT= on the command line moves the SDK, and the
+	 * identity that comes with it has to move too.  The second pass
+	 * is what keeps an explicit SDK_VERSION= from being overruled by
+	 * the SDK's own.
+	 */
+	apply_setting_overrides(t, opts);
+	settings_sync_sdk_root(t);
+	apply_setting_overrides(t, opts);
 
 	settings_set(t, "ACTION", opts->action ? opts->action : "build");
 	return t;

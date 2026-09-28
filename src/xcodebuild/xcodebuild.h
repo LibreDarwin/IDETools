@@ -89,6 +89,15 @@ int settings_emit(settings_table *t, int as_json, int pretty);
  * into the settings table. Array/dict values are flattened. */
 void settings_merge_plist_dict(settings_table *t, CFTypeRef dict);
 
+/* Re-derive the SDK settings (SDK_DIR/SDK_NAME/SDK_VERSION and the
+ * numbered forms) from the SDK that SDKROOT names, so that they describe
+ * the SDK in use rather than whichever SDK a scan found first.  A no-op
+ * when SDKROOT is still an unresolved name or SDK_DIR already agrees with
+ * it.  Call once after the project's and xcconfig's settings are merged,
+ * and again after command-line overrides so that an SDKROOT= given on the
+ * command line is followed too. */
+void settings_sync_sdk_root(settings_table *t);
+
 /* ------------------------------------------------------------------ */
 /* Parsed command-line options.                                        */
 /* ------------------------------------------------------------------ */
