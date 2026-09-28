@@ -14,6 +14,7 @@
 		FE0000000000000000000005 /* ini.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000015 /* ini.c */; };
 		FE0000000000000000000006 /* devpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000016 /* devpath.c */; };
 		FE0000000000000000000007 /* sdkpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000017 /* sdkpath.c */; };
+		FE0000000000000000000008 /* cfplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000025 /* cfplist.c */; };
 		FE000000000000000000000B /* xcodebuildLoader.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000022 /* xcodebuildLoader.c */; };
 /* End PBXBuildFile section */
 
@@ -25,11 +26,13 @@
 		FE0000000000000000000015 /* ini.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ini.c; sourceTree = "<group>"; };
 		FE0000000000000000000016 /* devpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = devpath.c; sourceTree = "<group>"; };
 		FE0000000000000000000017 /* sdkpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sdkpath.c; sourceTree = "<group>"; };
+		FE0000000000000000000025 /* cfplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = cfplist.c; sourceTree = "<group>"; };
 		FE000000000000000000001B /* xcodebuild.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = xcodebuild.h; sourceTree = "<group>"; };
 		FE000000000000000000001C /* project.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = project.h; sourceTree = "<group>"; };
 		FE000000000000000000001D /* ini.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ini.h; sourceTree = "<group>"; };
 		FE000000000000000000001E /* devpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = devpath.h; sourceTree = "<group>"; };
 		FE000000000000000000001F /* sdkpath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sdkpath.h; sourceTree = "<group>"; };
+		FE0000000000000000000026 /* cfplist.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = cfplist.h; sourceTree = "<group>"; };
 		FE0000000000000000000021 /* xcodebuild */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = xcodebuild; sourceTree = BUILT_PRODUCTS_DIR; };
 		FE0000000000000000000022 /* xcodebuildLoader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xcodebuildLoader.c; sourceTree = "<group>"; };
 		FE0000000000000000000023 /* xcodebuildLoader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = xcodebuildLoader.h; sourceTree = "<group>"; };
@@ -99,6 +102,8 @@
 		FE0000000000000000000034 /* common */ = {
 			isa = PBXGroup;
 			children = (
+				FE0000000000000000000025 /* cfplist.c */,
+				FE0000000000000000000026 /* cfplist.h */,
 				FE0000000000000000000016 /* devpath.c */,
 				FE0000000000000000000017 /* sdkpath.c */,
 				FE000000000000000000001E /* devpath.h */,
@@ -191,6 +196,7 @@
 				FE0000000000000000000005 /* ini.c in Sources */,
 				FE0000000000000000000006 /* devpath.c in Sources */,
 				FE0000000000000000000007 /* sdkpath.c in Sources */,
+				FE0000000000000000000008 /* cfplist.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
