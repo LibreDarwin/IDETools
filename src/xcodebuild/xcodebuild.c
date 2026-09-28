@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
@@ -708,6 +709,274 @@ static void derive_build_dirs(settings_table *t)
 }
 
 /*
+ * MD5, as lowercase hex.
+ *
+ * Apple builds a filename component out of the digest of the SDK's path, and
+ * the digest it uses is MD5.  CommonCrypto still has it, marked deprecated
+ * since 10.15 for the cryptographic reason, which does not apply here: this
+ * reproduces a name Apple already chose, it protects nothing, and a different
+ * digest would name a file that does not exist.  Rather than suppress the
+ * warning or take a new dependency it is implemented here, where the reason for
+ * using a broken hash sits next to it.  The test suite checks it against the
+ * system's own md5.
+ */
+static uint32_t md5_rot(uint32_t x, unsigned r)
+{
+	return (x << r) | (x >> (32 - r));
+}
+
+static void md5_block(uint32_t h[4], const uint8_t block[64])
+{
+	static const uint32_t K[64] = {
+		0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf,
+		0x4787c62a, 0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af,
+		0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e,
+		0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+		0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6,
+		0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
+		0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+		0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+		0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039,
+		0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244, 0x432aff97,
+		0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d,
+		0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+		0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+	};
+	static const uint8_t R[64] = {
+		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+		5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+		4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+		6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+	};
+	uint32_t m[16];
+	uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+	int r;
+
+	for (r = 0; r < 16; r++)
+		m[r] = (uint32_t)block[r * 4] |
+		    ((uint32_t)block[r * 4 + 1] << 8) |
+		    ((uint32_t)block[r * 4 + 2] << 16) |
+		    ((uint32_t)block[r * 4 + 3] << 24);
+
+	for (r = 0; r < 64; r++) {
+		uint32_t f, g, sum, tmp;
+
+		if (r < 16) {
+			f = (b & c) | (~b & d);
+			g = (unsigned)r;
+		} else if (r < 32) {
+			f = (d & b) | (~d & c);
+			g = (5 * (unsigned)r + 1) & 15;
+		} else if (r < 48) {
+			f = b ^ c ^ d;
+			g = (3 * (unsigned)r + 5) & 15;
+		} else {
+			f = c ^ (b | ~d);
+			g = (7 * (unsigned)r) & 15;
+		}
+
+		tmp = d;
+		d = c;
+		c = b;
+		sum = a + f + K[r] + m[g];
+		b += md5_rot(sum, R[r]);
+		a = tmp;
+	}
+
+	h[0] += a;
+	h[1] += b;
+	h[2] += c;
+	h[3] += d;
+}
+
+static void md5_hex(const void *data, size_t len, char *out /* 33 bytes */)
+{
+	const uint8_t *p = data;
+	uint32_t h[4] = { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476 };
+	uint64_t bits = (uint64_t)len * 8;
+	uint8_t block[64];
+	size_t used = 0, n, i;
+
+	while (used + 64 <= len) {
+		md5_block(h, p + used);
+		used += 64;
+	}
+
+	/* 0x80, zeroes, then the length in bits, little-endian. */
+	n = len - used;
+	memcpy(block, p + used, n);
+	block[n++] = 0x80;
+	if (n > 56) {
+		while (n < 64)
+			block[n++] = 0;
+		md5_block(h, block);
+		n = 0;
+	}
+	while (n < 56)
+		block[n++] = 0;
+	for (i = 0; i < 8; i++)
+		block[56 + i] = (uint8_t)(bits >> (8 * i));
+	md5_block(h, block);
+
+	/*
+	 * The digest is the four state words serialized little-endian, so
+	 * "%08x%08x%08x%08x" over the words is the byte-reverse of the real
+	 * digest -- a plausible-looking wrong hash, not an obvious failure.
+	 * Take the bytes lowest-first out of each word, then hex them: the
+	 * caller wants a lowercase hex string for a filename, not the raw
+	 * 16 bytes.
+	 */
+	for (i = 0; i < 4; i++) {
+		uint32_t v = h[i];
+		size_t b;
+
+		for (b = 0; b < 4; b++) {
+			unsigned byte = (v >> (8 * b)) & 0xff;
+
+			*out++ = "0123456789abcdef"[byte >> 4];
+			*out++ = "0123456789abcdef"[byte & 0xf];
+		}
+	}
+	*out = '\0';
+}
+
+/*
+ * The per-user caches.
+ *
+ * Two families under the Darwin user cache directory, and the shape is Apple's
+ * rather than ours:
+ *
+ *   <user cache>/com.apple.DeveloperTools/<version>/<product>
+ *   <user cache>/org.llvm.clang/ModuleCache.noindex/Session.modulevalidation
+ *
+ * <version> is the product's own "<short>-<build>" -- 26.6-17F113 for Xcode
+ * 26.6 -- and <product> is the bundle's name.  Both come out of the developer
+ * directory that was resolved, not out of this tool: it is the tree that is
+ * building, the same rule the SYSTEM_DEVELOPER_ family already follows.  The
+ * short version is CFBundleShortVersionString and the build is
+ * ProductBuildVersion, both from the bundle's version.plist -- and notably not
+ * CFBundleVersion, which for Xcode is a different number entirely (24959
+ * against 17F113), so the obvious plist key is the wrong one.
+ *
+ * The SDK stat cache adds a component that looks platform-shaped and is not:
+ *
+ *   <cache root>/SDKStatCaches.noindex/<canonical>-<sdkbuild>-<md5 of sdkpath>
+ *
+ * The first is the SDK's own CanonicalName ("macosx26.5") and the last is the
+ * MD5 of the resolved SDK directory.  It reads like it wants a platform model
+ * and does not: every part comes from the SDK already resolved for -sdk, so it
+ * moves to iphoneos26.5 on its own.
+ *
+ * A developer directory that is not inside a bundle -- CommandLineTools, or a
+ * plain directory the caller passed -- has no version.plist to read, and
+ * nothing is invented in that case: the versioned paths are left unemitted
+ * rather than filled in with a plausible number.
+ */
+static void derive_cache_paths(settings_table *t, const char *devpath)
+{
+	static const char dev_suffix[] = "/Contents/Developer";
+	char user_cache[PATH_MAX];
+	char root[PATH_MAX], buf[PATH_MAX];
+	const char *cache;
+	char *shortv, *build, *canonical, *sdkbuild;
+	const char *sdkroot;
+	size_t dlen, clen, blen;
+
+	/*
+	 * confstr(3) fills the buffer and returns how many bytes it wrote,
+	 * which is not the POSIX signature -- Darwin's returns size_t rather
+	 * than a char *, so the pointer-shaped call does not compile.  Zero is
+	 * the failure case either way.
+	 */
+	if (confstr(_CS_DARWIN_USER_CACHE_DIR, user_cache, sizeof(user_cache)) == 0)
+		return;
+	cache = user_cache;
+	clen = strlen(cache);
+	while (clen > 1 && cache[clen - 1] == '/')
+		clen--;
+
+	/* The clang one needs neither a product version nor an SDK. */
+	snprintf(buf, sizeof(buf), "%.*s/org.llvm.clang/ModuleCache.noindex/"
+	    "Session.modulevalidation", (int)clen, cache);
+	settings_defaults_set(t, "CLANG_MODULES_BUILD_SESSION_FILE", buf);
+
+	dlen = strlen(devpath);
+	if (dlen <= sizeof(dev_suffix) - 1 ||
+	    strcmp(devpath + dlen - (sizeof(dev_suffix) - 1), dev_suffix) != 0)
+		return;
+
+	{
+		char vpath[PATH_MAX];
+		CFDictionaryRef dict;
+
+		snprintf(vpath, sizeof(vpath), "%.*s/Contents/version.plist",
+		    (int)(dlen - (sizeof(dev_suffix) - 1)), devpath);
+		if ((dict = cfplist_read(vpath)) == NULL)
+			return;
+		shortv = cfplist_string(dict, "CFBundleShortVersionString");
+		build = cfplist_string(dict, "ProductBuildVersion");
+		CFRelease(dict);
+	}
+	if (shortv == NULL || build == NULL) {
+		free(shortv);
+		free(build);
+		return;
+	}
+
+	/* <product> is the enclosing bundle's name, without the extension. */
+	{
+		char bundle[PATH_MAX];
+		const char *base, *slash;
+
+		snprintf(bundle, sizeof(bundle), "%.*s",
+		    (int)(dlen - (sizeof(dev_suffix) - 1)), devpath);
+		slash = strrchr(bundle, '/');
+		base = slash != NULL ? slash + 1 : bundle;
+		blen = strlen(base);
+		if (blen > 4 && strcmp(base + blen - 4, ".app") == 0)
+			blen -= 4;
+
+		snprintf(root, sizeof(root),
+		    "%.*s/com.apple.DeveloperTools/%s-%s/%.*s",
+		    (int)clen, cache, shortv, build, (int)blen, base);
+	}
+
+	free(shortv);
+	free(build);
+
+	settings_defaults_set(t, "CACHE_ROOT", root);
+	settings_defaults_set(t, "CCHROOT", root);
+	settings_defaults_set(t, "SDK_STAT_CACHE_DIR", root);
+
+	snprintf(buf, sizeof(buf), "%s/CompilationCache.noindex", root);
+	settings_defaults_set(t, "COMPILATION_CACHE_CAS_PATH", buf);
+
+	sdkroot = settings_get(t, "SDKROOT");
+	if (sdkroot == NULL || *sdkroot != '/')
+		return;
+
+	canonical = xt_sdk_setting(sdkroot, "CanonicalName");
+	sdkbuild = xt_sdk_build_version(sdkroot);
+	if (canonical == NULL || sdkbuild == NULL) {
+		free(canonical);
+		free(sdkbuild);
+		return;
+	}
+
+	{
+		char digest[33];
+
+		md5_hex(sdkroot, strlen(sdkroot), digest);
+		snprintf(buf, sizeof(buf), "%s/SDKStatCaches.noindex/%s-%s-%s"
+		    ".sdkstatcache", root, canonical, sdkbuild, digest);
+		settings_defaults_set(t, "SDK_STAT_CACHE_PATH", buf);
+	}
+
+	free(canonical);
+	free(sdkbuild);
+}
+
+/*
  * The settings a target builds with.
  *
  * `target` is the target to resolve for, which is normally the one the
@@ -1090,6 +1359,8 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 	apply_setting_overrides(t, opts);
 	settings_sync_sdk_root(t);
 	apply_setting_overrides(t, opts);
+
+	derive_cache_paths(t, devpath);
 
 	settings_set(t, "ACTION", opts->action ? opts->action : "build");
 	return t;

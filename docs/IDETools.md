@@ -399,7 +399,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 67 absent, both counted per key with both tools on the same `DEVELOPER_DIR`; no value differences at all where the SDK resolves, the 6 on the default build being Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 48 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -642,6 +642,46 @@ already matching. The tests override `HOME` and assert the keys stay under the
 passwd home, and separately assert the override was visible to the environment,
 so a `getenv`-based implementation fails rather than passing by accident.
 
+#### Six caches, and a digest in one of their names
+
+The six remaining `/var/folders` keys are two families, and neither is derivable
+from a key name:
+
+| key | value |
+| --- | --- |
+| `CACHE_ROOT`, `CCHROOT`, `SDK_STAT_CACHE_DIR` | `<user cache>/com.apple.DeveloperTools/<version>-<build>/<product>` |
+| `COMPILATION_CACHE_CAS_PATH` | that directory + `/CompilationCache.noindex` |
+| `CLANG_MODULES_BUILD_SESSION_FILE` | `<user cache>/org.llvm.clang/ModuleCache.noindex/Session.modulevalidation` |
+| `SDK_STAT_CACHE_PATH` | that directory + `/SDKStatCaches.noindex/<name>-<build>-<md5>.sdkstatcache` |
+
+`<user cache>` is `confstr(_CS_DARWIN_USER_CACHE_DIR)`, not `$HOME` and not
+`NSTemporaryDirectory()`. The version is the *bundle's*, so the developer
+directory has to be read back out to the `.app` that contains it: the path is
+`<bundle>/Contents/version.plist`, and the two keys are `CFBundleShortVersionString`
+and `ProductBuildVersion` — not `CFBundleVersion`, which is a different number
+entirely (26.6-17F113 here, against 24959). `<product>` is the bundle's own name,
+so a bundle called `FakeXcode.app` gives `.../FakeXcode`, not `Developer`.
+
+A developer directory that is not inside a bundle — the CommandLineTools shape —
+has no version to put in the path, so the four versioned keys are absent rather
+than filled with a guess. The Clang one is not under the version directory and is
+always reported.
+
+The last component of the SDK stat cache name is an MD5 of the resolved SDK path,
+which makes it the one place in the tool that computes a hash. It is computed
+in-tree rather than through `CC_MD5`, which is deprecated and warns under this
+project's flags, and the output is the lowercase hex of the little-endian digest
+— the two ways of getting this wrong both produce a plausible 32-character
+string rather than an error, and the byte-reversed one is exactly what
+`snprintf("%08x%08x%08x%08x", h[0], h[1], h[2], h[3])` gives. The tests check it
+against `/sbin/md5` on the SDK path the tool itself resolved, and the oracle for
+the other two fields is the SDK's own `SystemVersion.plist`.
+
+The name follows `-sdk`, so the caches are per-SDK; `CACHE_ROOT` does not. That
+is the whole reason these six could be done before the platform model: nothing
+here depends on a platform, only on which SDK is in force and which bundle
+contains it.
+
 That exception is the visible edge of a much larger gap, and the larger gap is
 the next real item. With `-sdk iphoneos` this tool emits macOS-shaped settings:
 56 differing keys, most of them one omission — there is no platform that tracks
@@ -658,13 +698,18 @@ Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
 | | before | after (project default) | after (`-sdk macosx`) |
 | | --- | --- | --- |
-| only in Apple | 93 | 67 | 54 |
+| only in Apple | 93 | 67 | 48 |
 | shared, differing | 33 | 6 | 0 |
-| shared, matching | 332 | 385 | 430 |
+| shared, matching | 332 | 385 | 436 |
 
 The two columns differ only because of the missing SDK: the default build
 cannot resolve one, so it is the weaker of the two measurements and should not
-be read as parity.
+be read as parity. The middle column is also a snapshot rather than a live
+figure — it was taken where the tool resolved no SDK at all, and it is not
+re-run here, because in this tree the ambient toolchain selection resolves the
+default SDK to a staged internal SDK under `../xcode-tools`, which is a
+configuration and not a parity case. The `-sdk macosx` column is the one to
+read, and it is what every other figure in this document quotes.
 
 The two outright bugs found earlier in this document were fixed first, which is
 what the "419/52/49" figures below refer to.
@@ -844,15 +889,15 @@ With those, the project default's 6 differences are all Apple's fallback, and
 produced by a self-build, and has been withdrawn.** It was measured after a
 build that named a tool which does not exist — the staged tree has no `xcodebuild`
 at its root — and hashed a file the build had not written. The real figure,
-produced by the procedure below, is `197704` bytes, sha256
-`d9fe229164c12fc767c3b10f45d6fef1662db9e2edf278476b6e858d95e7504d`, and it is
+produced by the procedure below, is `214472` bytes, sha256
+`d4ed9b30b9ae1319c8d2670d91171663b814b39cb42ae84f161adaf87ff9f030`, and it is
 byte-identical across two consecutive passes. It moves whenever the source does,
 so it is a property of the tree rather than a fact about the tool; the figure
-here was recomputed after adding the ten install-location settings, which is why
-it is not the `197624` that the previous commit recorded. An earlier version of
+here was recomputed after adding the six per-user cache settings, which is why
+it is not the `197704` that the previous commit recorded. An earlier version of
 this paragraph also claimed the result was identical to the source tree's own
 `build/release` binary. That is not reproducible and is not claimed: the tree
-build is `178344` bytes, because it is compiled with different flags by a
+build is `178520` bytes, because it is compiled with different flags by a
 different driver. Only the two-pass equality is asserted.
 
 Three things about that procedure are worth writing down, because each one
@@ -896,8 +941,8 @@ The rest of the gap is systematic, not incidental:
   `.` against `/Users/…/IDETools`, `BUILD_DIR` `./build` against an absolute
   path. Ours also uses `./build/Debug` where Apple uses
   `…/build/…/Release-iphoneos`-style derived directories.
-- **54 settings missing outright** where the SDK resolves, including
-  `ANDROID_DEPLOYMENT_TARGET`, `CCHROOT`, `LEGACY_DEVELOPER_DIR`,
+- **48 settings missing outright** where the SDK resolves, including
+  `ANDROID_DEPLOYMENT_TARGET`, `LEGACY_DEVELOPER_DIR`,
   `DUMP_DEPENDENCIES_OUTPUT_PATH`, and a family of
   `*_DEPENDENCY_INFO_FILE` / `*_MAP_FILE_PATH` linker settings.
 - **51 we emit that Apple does not**, mostly code-signing and Clang-warning
@@ -946,26 +991,25 @@ measurement rather than from reading code:
   paths look plausible. The derivation now requires `usr/bin`, which every real
   Developer directory has and the repository root does not. Fixed in the
   follow-up commit; the two new assertions fail without it.
-- **The 54 settings we still do not emit**, where the SDK resolves. The note here
+- **The 48 settings we still do not emit**, where the SDK resolves. The note here
   used to call the per-arch and per-variant directories the largest group; counted,
   they are six keys. The largest is the twenty-two `SRCROOT`-rooted file lists,
   and it is large precisely because it is *not* one rule — `FILE_LIST`,
   `LD_MAP_FILE_PATH`, `PRECOMP_DESTINATION_DIR`, `REZ_COLLECTOR_DIR` and
-  `PKGINFO_FILE_PATH` share a prefix and nothing else. The three groups that did
+  `PKGINFO_FILE_PATH` share a prefix and nothing else. The four groups that did
   turn out to be one rule each are done: the `OBJROOT` family
   (`COMPOSITE_SDK_DIRS`, `GENERATED_MODULEMAP_DIR`, `SHARED_PRECOMPS_DIR`,
   `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`), the two products-directory keys
-  (`SHARED_DERIVED_FILE_DIR`, `METAL_LIBRARY_OUTPUT_DIR`), and the ten
-  `SYSTEM_*`/`LOCAL_*`/`USER_*` install locations. What is left is 54, and the
-  measured shape of it is worth having rather than guessing at: 22 rooted at
-  `SRCROOT`, 8 under the Developer directory (`PLATFORM_DIR`, `TOOLCHAIN_DIR`,
-  the `SDK_DIR_*` pair, the two test search paths), 6 under `/var/folders`, and 18
-  fixed values with no path in them at all. The `SRCROOT` group is the one worth
-  attacking next, but note that none of the 54 are rooted at
+  (`SHARED_DERIVED_FILE_DIR`, `METAL_LIBRARY_OUTPUT_DIR`), the ten
+  `SYSTEM_*`/`LOCAL_*`/`USER_*` install locations, and the six per-user caches.
+  What is left is 48, and the measured shape of it is worth having rather than
+  guessing at: 22 rooted at `SRCROOT`, 8 under the Developer directory
+  (`PLATFORM_DIR`, `TOOLCHAIN_DIR`, the `SDK_DIR_*` pair, the two test search
+  paths), and 18 fixed values with no path in them at all. The `/var/folders`
+  group that was in that count is now empty. The `SRCROOT` group is the one worth
+  attacking next, but note that none of the 48 are rooted at
   `CONFIGURATION_BUILD_DIR` — this document used to call them
-  "build-directory-rooted", which is wrong; they are project-rooted. The six
-  cache directories contain an Xcode version and build hash in the middle of the
-  path.
+  "build-directory-rooted", which is wrong; they are project-rooted.
 - **A platform model, which is the thing blocking most of the rest.** Everything
   above is macOS. With `-sdk iphoneos` this tool emits macOS-shaped settings:
   56 differing keys, and nearly all of them trace to one omission — it has no

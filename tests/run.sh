@@ -669,5 +669,140 @@ is "USER_LIBRARY_DIR is under the passwd home" \
     "$realhome/Library" "$(HOME="$fakehome" setting "$PROJ" USER_LIBRARY_DIR)"
 
 echo
+echo "the per-user caches, and the digest in one of their names"
+
+# Both cache families are rooted at the Darwin user cache directory, which is
+# not $HOME and is reported by confstr(3).  getconf(1) reads the same place, so
+# it is the oracle here -- with its trailing slash stripped, because the value
+# the tool reports does not carry one and pasting getconf's in would compare two
+# different spellings of the same path.
+usercache=$(getconf DARWIN_USER_CACHE_DIR)
+usercache=${usercache%/}
+
+# This one is not under the Xcode version directory, so it needs no bundle at
+# all, which makes it the one cache key that is available everywhere.
+is "the clang session file is under the llvm module cache" \
+    "$usercache/org.llvm.clang/ModuleCache.noindex/Session.modulevalidation" \
+    "$(setting "$PROJ" CLANG_MODULES_BUILD_SESSION_FILE)"
+
+# The versioned caches name the bundle they came from, so they are only right if
+# the version is read out of the developer directory in force.  A fake bundle
+# carrying a version that cannot occur in a real install is the strong form of
+# that test: a hardcoded Apple path, a different key of the same plist, or a
+# leftover from the bundle that happens to be selected all miss by construction.
+fakebundle="$scratch/FakeXcode.app"
+fakedev="$fakebundle/Contents/Developer"
+mkdir -p "$fakedev"
+/usr/bin/plutil -create xml1 "$fakebundle/Contents/version.plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string 9.9 \
+    "$fakebundle/Contents/version.plist"
+/usr/bin/plutil -insert ProductBuildVersion -string 999 \
+    "$fakebundle/Contents/version.plist"
+# The plist also has the key a person would reach for first, and it is not the
+# one Apple uses: the two differ here, so a read of the wrong one cannot pass.
+# shellcheck disable=SC2016
+/usr/bin/plutil -insert CFBundleVersion -string 424242 \
+    "$fakebundle/Contents/version.plist"
+
+fakecache="$usercache/com.apple.DeveloperTools/9.9-999/FakeXcode"
+is "CACHE_ROOT is the bundle's version and product name" \
+    "$fakecache" "$(setting_dev "$fakedev" "$PROJ" CACHE_ROOT)"
+is "CCHROOT is the same directory" \
+    "$fakecache" "$(setting_dev "$fakedev" "$PROJ" CCHROOT)"
+is "SDK_STAT_CACHE_DIR is that directory too" \
+    "$fakecache" "$(setting_dev "$fakedev" "$PROJ" SDK_STAT_CACHE_DIR)"
+is "and the compilation cache hangs off it" \
+    "$fakecache/CompilationCache.noindex" \
+    "$(setting_dev "$fakedev" "$PROJ" COMPILATION_CACHE_CAS_PATH)"
+is "the product name comes from the bundle, not the developer directory" \
+    "" "$([ "$(setting_dev "$fakedev" "$PROJ" CACHE_ROOT)" = \
+            "$usercache/com.apple.DeveloperTools/9.9-999/Developer" ] && echo same)"
+is "the clang path is the same under any bundle" \
+    "$usercache/org.llvm.clang/ModuleCache.noindex/Session.modulevalidation" \
+    "$(setting_dev "$fakedev" "$PROJ" CLANG_MODULES_BUILD_SESSION_FILE)"
+
+# A developer directory that is not inside a bundle is the CommandLineTools
+# shape.  The versioned caches need a version, and inventing one would name a
+# directory Apple never uses, so they are absent instead of guessed at.
+is "no bundle means no CACHE_ROOT" \
+    "" "$(setting_dev "$devroot" "$PROJ" CACHE_ROOT)"
+is "and no CCHROOT" \
+    "" "$(setting_dev "$devroot" "$PROJ" CCHROOT)"
+is "and no SDK_STAT_CACHE_DIR" \
+    "" "$(setting_dev "$devroot" "$PROJ" SDK_STAT_CACHE_DIR)"
+is "though the clang session file is still reported" \
+    "$usercache/org.llvm.clang/ModuleCache.noindex/Session.modulevalidation" \
+    "$(setting_dev "$devroot" "$PROJ" CLANG_MODULES_BUILD_SESSION_FILE)"
+
+# The real bundle, cross-checked against the same plist read with plutil.  The
+# expected string is computed from the bundle in force rather than pasted from
+# Apple's output, so a stale hardcoded version fails on a different Xcode
+# instead of quietly agreeing.
+sysdev=$(setting "$PROJ" SYSTEM_DEVELOPER_DIR)
+case "$sysdev" in
+*/Contents/Developer)
+    bundle=${sysdev%/Contents/Developer}
+    vplist="$bundle/Contents/version.plist"
+    shortv=$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$vplist")
+    buildv=$(/usr/bin/plutil -extract ProductBuildVersion raw "$vplist")
+    bundlev=$(/usr/bin/plutil -extract CFBundleVersion raw "$vplist")
+    is "CACHE_ROOT is the bundle's own version and product name" \
+        "$usercache/com.apple.DeveloperTools/$shortv-$buildv/$(basename "$bundle" .app)" \
+        "$(setting "$PROJ" CACHE_ROOT)"
+    isnt "and the build is not CFBundleVersion" \
+        "$usercache/com.apple.DeveloperTools/$shortv-$bundlev/$(basename "$bundle" .app)" \
+        "$(setting "$PROJ" CACHE_ROOT)"
+    is "the compilation cache is inside it" \
+        "$(setting "$PROJ" CACHE_ROOT)/CompilationCache.noindex" \
+        "$(setting "$PROJ" COMPILATION_CACHE_CAS_PATH)"
+    ;;
+*)
+    skipt "CACHE_ROOT names the bundle version and product" \
+        "$sysdev is not inside a bundle"
+    ;;
+esac
+
+# The caches are settings, so an override on the command line still wins.  They
+# are set as defaults rather than forced, and this is where that shows.
+is "an overridden CACHE_ROOT wins over the derived one" \
+    /tmp/ovr-cache "$(setting "$PROJ" CACHE_ROOT CACHE_ROOT=/tmp/ovr-cache)"
+is "and the derived one is back when the override is gone" \
+    "$(setting "$PROJ" CACHE_ROOT)" \
+    "$(setting "$PROJ" CACHE_ROOT CACHE_ROOT=$(setting "$PROJ" CACHE_ROOT))"
+
+# The last component of the SDK stat cache name is a digest of the SDK path, so
+# it has to be a real digest of the resolved SDK: /sbin/md5 is the oracle, and
+# the SDK's own name and build supply the other two fields, read here from the
+# SDK's plists rather than from the tool.  -sdk is named explicitly so the test
+# exercises a real SDK instead of whichever one happens to be the default.
+sdkdir=$(setting "$PROJ" SDK_DIR -sdk macosx)
+statpath=$(setting "$PROJ" SDK_STAT_CACHE_PATH -sdk macosx)
+if [ -n "$sdkdir" ] && [ -n "$statpath" ]; then
+    sdkname=$(setting "$PROJ" SDK_NAME -sdk macosx)
+    sdkbuild=$(/usr/bin/plutil -extract ProductBuildVersion raw \
+        "$sdkdir/System/Library/CoreServices/SystemVersion.plist")
+    digest=$(/usr/bin/printf '%s' "$sdkdir" | /sbin/md5 -q)
+    is "the SDK stat cache is named for the SDK in force, by its md5" \
+        "$sdkname-$sdkbuild-$digest.sdkstatcache" "$(basename "$statpath")"
+    is "and it lives under SDK_STAT_CACHE_DIR, not CACHE_ROOT" \
+        "$(setting "$PROJ" SDK_STAT_CACHE_DIR -sdk macosx)/SDKStatCaches.noindex/$(basename "$statpath")" \
+        "$statpath"
+    isnt "the digest is not of the cache directory instead" \
+        "$(setting "$PROJ" SDK_STAT_CACHE_DIR -sdk macosx)/SDKStatCaches.noindex/$sdkname-$sdkbuild-$(printf '%s' "$(setting "$PROJ" SDK_STAT_CACHE_DIR -sdk macosx)" | /sbin/md5 -q).sdkstatcache" \
+        "$statpath"
+    # The name has to follow -sdk, or the file is shared by every SDK and the
+    # cache is wrong the first time two are in play.
+    is "CACHE_ROOT does not move with -sdk" \
+        "$(setting "$PROJ" CACHE_ROOT -sdk macosx)" \
+        "$(setting "$PROJ" CACHE_ROOT -sdk iphoneos)"
+    is "but the SDK stat cache file name does" \
+        "1" "$([ "$(setting "$PROJ" SDK_STAT_CACHE_PATH -sdk macosx)" != \
+            "$(setting "$PROJ" SDK_STAT_CACHE_PATH -sdk iphoneos)" ] && echo 1)"
+else
+    skipt "the SDK stat cache name carries the SDK's md5" \
+        "no macOS SDK stat cache path in this developer directory"
+fi
+
+echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
