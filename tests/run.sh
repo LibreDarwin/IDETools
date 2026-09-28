@@ -75,6 +75,16 @@ setting_dev() {
 	    sed -n "s/^    $_k = //p" | head -1
 }
 
+# plist_array <plist> <key> -> the CFArray value of <key>, its entries
+# joined with spaces.  plutil has no array join, and this is what the tool's
+# own suggested-values join answers with, so the oracle is the plist itself.
+plist_array() {
+	/usr/bin/plutil -convert xml1 -o - "$1" 2>/dev/null |
+	    sed -n "/<key>$2<\/key>/,/<\/array>/p" |
+	    sed -n 's/.*<string>\([^<]*\)<\/string>.*/\1/p' |
+	    paste -sd' ' -
+}
+
 # The scratch project is a copy of the real one: hand-written pbxproj fixtures
 # are a second thing to get wrong, and a copy is guaranteed to parse.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/idetools-tests.XXXXXX") || exit 1
@@ -215,6 +225,69 @@ else
 		    "$want_maj" "$(setting "$PROJ" SDK_VERSION_MAJOR "SDKROOT=$sdk")"
 		is "$tag: SDK_VERSION_MINOR is $want_min" \
 		    "$want_min" "$(setting "$PROJ" SDK_VERSION_MINOR "SDKROOT=$sdk")"
+
+		# What the platform says about itself, read from the same plist
+		# and checked with -sdk so the platform pass, not just the
+		# identity sync, is the thing under test.  Normally one platform
+		# is exercised per machine (the two iOS-family SDKs are the same
+		# directory shape, and macosx is the default), so these assert
+		# the derivation against the plist rather than quoted values --
+		# a table keyed off nothing would not know MACOSX_DEPLOYMENT_TARGET
+		# from IPHONEOS_DEPLOYMENT_TARGET.
+		plat=$(/usr/bin/plutil -extract DefaultProperties.PLATFORM_NAME raw \
+		    -o - "$plist" 2>/dev/null)
+		if [ -n "$plat" ]; then
+			is "$tag: PLATFORM_NAME is the platform's own name" \
+			    "$plat" \
+			    "$(setting_dev "$sdkroot" "$PROJ" PLATFORM_NAME -sdk "$want_name")"
+
+			dtname=$(/usr/bin/plutil \
+			    -extract "SupportedTargets.$plat.DeploymentTargetSettingName" \
+			    raw -o - "$plist" 2>/dev/null)
+			sys=$(/usr/bin/plutil \
+			    -extract "SupportedTargets.$plat.LLVMTargetTripleSys" \
+			    raw -o - "$plist" 2>/dev/null)
+
+			is "$tag: the deployment-target setting is the plist's" \
+			    "$dtname" \
+			    "$(setting_dev "$sdkroot" "$PROJ" DEPLOYMENT_TARGET_SETTING_NAME -sdk "$want_name")"
+			is "$tag: the triple sys is the plist's" \
+			    "$sys" \
+			    "$(setting_dev "$sdkroot" "$PROJ" SWIFT_PLATFORM_TARGET_PREFIX -sdk "$want_name")"
+
+			# The OS version half of the triple is the sys plus the
+			# deployment target in force; at report time the $(...)
+			# is expanded, so the plist's default target is the oracle
+			# and the two halves read apart yet agree.
+			is "$tag: the LLVM OS version is the sys plus the default target" \
+			    "$sys$(/usr/bin/plutil -extract "DefaultProperties.$dtname" raw -o - "$plist" 2>/dev/null)" \
+			    "$(setting_dev "$sdkroot" "$PROJ" LLVM_TARGET_TRIPLE_OS_VERSION -sdk "$want_name")"
+
+			# The default deployment target is under the setting the
+			# plist named, so that key has to move with the SDK too.
+			is "$tag: the deployment-target default is the plist's" \
+			    "$(/usr/bin/plutil -extract "DefaultProperties.$dtname" raw -o - "$plist" 2>/dev/null)" \
+			    "$(setting_dev "$sdkroot" "$PROJ" "$dtname" -sdk "$want_name")"
+
+			# The suggested-values list is an array in the plist, and
+			# the tool reports it joined with spaces.
+			is "$tag: the suggested values are the plist's array, joined" \
+			    "$(plist_array "$plist" DEPLOYMENT_TARGET_SUGGESTED_VALUES)" \
+			    "$(setting_dev "$sdkroot" "$PROJ" DEPLOYMENT_TARGET_SUGGESTED_VALUES -sdk "$want_name")"
+
+			# Entitlements go in the binary on simulators and in a
+			# copy of the profile elsewhere; the boundary is the
+			# platform name, so a simulator SDK asserts the other half.
+			case $plat in
+			*simulator*) want_ent=__entitlements ;;
+			*) want_ent=Signature ;;
+			esac
+			is "$tag: entitlements land in $want_ent" \
+			    "$want_ent" \
+			    "$(setting_dev "$sdkroot" "$PROJ" ENTITLEMENTS_DESTINATION -sdk "$want_name")"
+		else
+			skipt "$tag: platform" "plist has no DefaultProperties.PLATFORM_NAME"
+		fi
 	done
 fi
 

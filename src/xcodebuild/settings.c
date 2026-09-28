@@ -968,7 +968,9 @@ static void settings_apply_platform(settings_table *t, const sdk_info *sdk,
 		plat = derived;
 	}
 
-	is_macosx = plat != NULL && strcmp(plat, "macosx") == 0;
+	/* Nothing names a platform: it is the macOS fallback, the same
+	 * shape the unnamed developer directory always reported. */
+	is_macosx = plat == NULL || strcmp(plat, "macosx") == 0;
 	is_sim = plat != NULL && strstr(plat, "simulator") != NULL;
 	shape = platform_shape(plat);
 

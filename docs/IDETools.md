@@ -382,13 +382,13 @@ The small, self-contained neighbours worth considering as separate repos later:
 
    The count is also a function of the environment, which is worth knowing before
    reading a total as coverage. With `DEVELOPER_DIR` unset the suite reports
-   108 passed and 1 skipped; pointed at Xcode it reports 110 and 0 skipped. The
-   two extra assertions are the `TOOLCHAINS` pair, which need a toolchain whose
-   bundle has a `ToolchainInfo.plist`, and CommandLineTools has none. So the
-   suite does not silently lose tests when run bare, but a run without
-   `DEVELOPER_DIR` is two assertions short of a full one, and the skip is the
-   only signal. Counts quoted elsewhere in this file are bare runs unless they
-   say otherwise.
+   180 passed and 4 skipped; pointed at Xcode it reports 197 and 0 skipped. The
+   extra assertions are the SDK-loop and `TOOLCHAINS` families, which need an
+   SDK and a toolchain whose bundle has a `ToolchainInfo.plist`, and
+   CommandLineTools has neither the iOS platforms nor the toolchain plist. So
+   the suite does not silently lose tests when run bare, but a run without
+   `DEVELOPER_DIR` is short of a full one, and the skips are the only signal.
+   Counts quoted elsewhere in this file are bare runs unless they say otherwise.
 
 #### Status verdict — 2026-09-28
 
@@ -399,7 +399,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 23 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — with a `-sdk` that resolves, every platform agrees on every value except one: Apple also emits `SDKROOT` in its name form after the path form, and the name wins. All nine platforms measured (`macosx`, both iOS-family and both watch/vision-family pairs) hit that single key; without `-sdk`, the 6 that differ are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -482,9 +482,9 @@ Developer`). That agreement is deliberate rather than automatic: Apple ignores
 own directory is what makes the two sides comparable at all.
 
 ```
-settings emitted   apple 458, ours 449
-  shared            398
-  only in Apple      60
+settings emitted   apple 460, ours 491
+  shared            440
+  only in Apple      20
   only in ours       51
   shared, differing   6
 ```
@@ -492,8 +492,8 @@ settings emitted   apple 458, ours 449
 (Count settings, not lines: raw line counts shift by a few depending on how the
 trailing newline is handled, and a strict four-space regex silently drops keys.
 The figures above come from matching `^\s*KEY = value` on either side; they
-reconcile: 60 + 392 = 452 and 51 + 392 = 443, plus the 6 whose values differ,
-which is 458 and 449 counting each differing key once on the shared side.)
+reconcile: 20 + 440 = 460 and 51 + 440 = 491, plus the 6 whose values differ,
+which sit on the shared side.)
 
 Pointing our tool at a *different* Developer directory than Apple's inflates
 this by 31, not 10, and the extra 21 arrived with the `SYSTEM_DEVELOPER_*` and
@@ -521,19 +521,26 @@ Reproduce it: give both tools `-sdk macosx`, where the SDK resolves, and every
 one of the six agrees.
 
 ```
-settings emitted   apple 484, ours 490
-  shared            461
+settings emitted   apple 486, ours 492
+  shared            463
   only in Apple      23
   only in ours       29
-  shared, differing   0
+  shared, differing   1
 ```
 
-Zero differing keys. The honest conclusion is that the six are not defects in
-this tool but evidence that it does not reproduce a fallback for a missing SDK,
-and hardcoding the fallback values would be a second way to be wrong — it would
-break the resolvable-SDK case above, which currently matches. What is left to
-do about the fallback itself is a separate question, deliberately not answered
-here.
+The single differing key is `SDKROOT`, and this one is not a fallback: Apple
+emits it twice, once as the path its tool resolved and once as the platform
+name form `macosx26.5`, and the last emission wins its dictionary. We emit the
+path alone, so the two sides disagree about one key even though the value we
+carry is exactly Apple's path form. Reconcile: 23 + 463 = 486, 29 + 463 = 492,
+and the differing key is counted among the shared 463.
+
+Zero differing keys except that one. The honest conclusion is that the six are
+not defects in this tool but evidence that it does not reproduce a fallback for
+a missing SDK, and hardcoding the fallback values would be a second way to be
+wrong — it would break the resolvable-SDK case above, which currently matches.
+What is left to do about the fallback itself is a separate question, deliberately
+not answered here.
 
 The 22 keys that moved from "only in ours" (51 → 29) between the two tables
 are not SDK identity keys, which is what the first reading of the pair suggested.
@@ -827,25 +834,28 @@ into the test as a constant: an implementation that hashed the wrong thing would
 still produce 32 well-formed hex characters, and a self-comparison would not have
 noticed.
 
-That exception is the visible edge of a much larger gap, and the larger gap is
-the next real item. With `-sdk iphoneos` this tool emits macOS-shaped settings:
-41 differing keys, nearly all of them one omission — there is no platform that
-tracks `-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`, `SUPPORTED_PLATFORMS`,
-`PLATFORM_PREFERRED_ARCH`, `SDK_NAMES` and `SWIFT_PLATFORM_TARGET_PREFIX` are all
-the default platform's values, and `ARCHS_STANDARD*` and `VALID_ARCHS` list a
-Mac's architectures for an iOS target. It reaches past the platform keys too: the
-configuration directory is `Release-iphoneos`, not `Release`, so every derived
-`*_TEMP_DIR` is wrong as well. Every comparison quoted in this document is
-`-sdk macosx` for that reason, and the reason is now a known limitation rather
-than an unstated assumption.
+That exception was the visible edge of a much larger gap, and the larger gap
+was the platform model. With `-sdk iphoneos` this tool used to emit
+macOS-shaped settings: 41 differing keys, nearly all of them one omission —
+there was no platform that tracked `-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`,
+`SUPPORTED_PLATFORMS`, `PLATFORM_PREFERRED_ARCH`, `SDK_NAMES` and
+`SWIFT_PLATFORM_TARGET_PREFIX` were all the default platform's values, and
+`ARCHS_STANDARD*` and `VALID_ARCHS` listed a Mac's architectures for an iOS
+target. It reached past the platform keys too: the configuration directory was
+`Release-iphoneos`, not `Release`, so every derived `*_TEMP_DIR` was wrong as
+well. The platform model fixes all of it: the selected SDK names its platform,
+and a table shaped per platform carries the platform keys and the per-SDK
+suggested values. Every comparison quoted in this document is `-sdk macosx`
+because that is the one resolvable SDK every machine here has, not because the
+tool only knows macOS.
 
 Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
-| | before | after (project default) | after (`-sdk macosx`) |
+| | before | after (project default) | after (resolvable `-sdk macosx`) |
 | | --- | --- | --- |
 | only in Apple | 93 | 67 | 23 |
-| shared, differing | 33 | 6 | 0 |
-| shared, matching | 332 | 385 | 461 |
+| shared, differing | 33 | 6 | 1 |
+| shared, matching | 332 | 385 | 462 |
 
 The two columns differ only because of the missing SDK: the default build
 cannot resolve one, so it is the weaker of the two measurements and should not
@@ -853,8 +863,12 @@ be read as parity. The middle column is also a snapshot rather than a live
 figure — it was taken where the tool resolved no SDK at all, and it is not
 re-run here, because in this tree the ambient toolchain selection resolves the
 default SDK to a staged internal SDK under `../xcode-tools`, which is a
-configuration and not a parity case. The `-sdk macosx` column is the one to
-read, and it is what every other figure in this document quotes.
+configuration and not a parity case. The resolvable-`-sdk` column is the one to
+read. On `-sdk macosx` it hits 462 matching; the shape holds across every
+platform — each of the nine measured reports exactly one differing key, the
+`SDKROOT` double-emission, with the number of shared keys varying only with how
+many extra keys Apple's per-SDK `Info.plist` carries (the shared total is 463
+on macosx down to 441 on `xrsimulator`).
 
 The two outright bugs found earlier in this document were fixed first, which is
 what the "419/52/49" figures below refer to.
@@ -1026,7 +1040,7 @@ name-to-path step downstream uses the SDK that was asked for rather than the one
 the merge left behind.
 
 With those, the project default's 6 differences are all Apple's fallback, and
-`-sdk macosx` differs in nothing at all.
+`-sdk macosx` differs only in Apple's `SDKROOT` name-form double-emission.
 
 ##### Fixed point
 
@@ -1034,17 +1048,16 @@ With those, the project default's 6 differences are all Apple's fallback, and
 produced by a self-build, and has been withdrawn.** It was measured after a
 build that named a tool which does not exist — the staged tree has no `xcodebuild`
 at its root — and hashed a file the build had not written. The real figure,
-produced by the procedure below, is `214760` bytes, sha256
-`da047d4468cfaf37d12c8a71ef30b78908f605d21aebda57063c01842a4c0c87`, and it is
+produced by the procedure below, is `215192` bytes, sha256
+`1fd0e277798323dd5f08ab05a1e1e3c7e9c3db32318a10a59f63460ec8585c1b`, and it is
 byte-identical across two consecutive passes. It moves whenever the source does,
 so it is a property of the tree rather than a fact about the tool; the figure
-here was recomputed after adding the sixteen target-directory settings and the
-`-<platform>` suffix, which is why it is neither the `214472` that the previous
-commit recorded nor the `197704` before that. An earlier version of
-this paragraph also claimed the result was identical to the source tree's own
-`build/release` binary. That is not reproducible and is not claimed: the tree
-build is `195176` bytes, because it is compiled with different flags by a
-different driver. Only the two-pass equality is asserted.
+here was recomputed after the platform model, which is why it is neither the
+`214760` that the previous commit recorded nor the `197704` before that. An
+earlier version of this paragraph also claimed the result was identical to the
+source tree's own `build/release` binary. That is not reproducible and is not
+claimed: the tree build is `195176` bytes, because it is compiled with different
+flags by a different driver. Only the two-pass equality is asserted.
 
 Three things about that procedure are worth writing down, because each one
 silently produces a plausible wrong answer rather than an error:
@@ -1100,22 +1113,23 @@ The rest of the gap is systematic, not incidental:
 
 The value-level differences that used to sit alongside these — `ARCHS_BASE`,
 `TOOLCHAINS`, `STRINGSDATA_DIR`, the two search paths — are fixed above, and
-with them the only value differences left anywhere are the six that are Apple's
-fallback for a missing SDK.
+with them the only value differences left are the six that are Apple's
+fallback for a missing SDK, plus, on every resolvable `-sdk` build, the single
+`SDKROOT` double-emission described in the parity section.
 
 So the honest status is: **behavioural parity is not met, and the gap is
 measured rather than guessed.** Every value difference that survives measurement
 is now accounted for: the six that remain on the project default are Apple's
 fallback for an SDK that does not exist, and they agree with us once the SDK
-does. What remains is coverage, not disagreement. Of Apple's 458 settings, 67
-are absent from ours, and 6 carry a different value on the default build only —
-before counting the 51 keys we emit that Apple never does. Certifying parity
-means diffing `-showBuildSettings`, `-list` and the emitted compile/link
-command lines against Apple's binary across a matrix of options and targets, and
-closing the deltas above. Nothing in the fixed-point evidence substitutes for
-this: a fixed point proves self-consistency, and ours agreeing with the tree's
-tool only shows two implementations of the same `sdkpath.c` agree with each
-other.
+does. What remains is coverage, not disagreement. Where the SDK resolves, Apple
+emits 486 settings of which 23 are absent from ours — before counting the 29
+keys we emit that Apple never does — and the one differing shared value is the
+`SDKROOT` double-emission. Certifying parity means diffing
+`-showBuildSettings`, `-list` and the emitted compile/link command lines against
+Apple's binary across a matrix of options and targets, and closing the deltas
+above. Nothing in the fixed-point evidence substitutes for this: a fixed point
+proves self-consistency, and ours agreeing with the tree's tool only shows two
+implementations of the same `sdkpath.c` agree with each other.
 
 The next candidates, in the order they are worth doing, all come from the same
 measurement rather than from reading code:
@@ -1167,22 +1181,26 @@ measurement rather than from reading code:
   the products directory with a trailing space — so "none are
   build-directory-rooted" was wrong twice over, and the group is not purely
   project-rooted either.
-- **A platform model, which is the thing blocking most of the rest.** Everything
-  above is macOS. With `-sdk iphoneos` this tool emits macOS-shaped settings:
-  41 differing keys, and nearly all of them trace to one omission — it has no
-  platform that tracks `-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`,
-  `PLATFORM_FAMILY_NAME`, `SUPPORTED_PLATFORMS`, `PLATFORM_PREFERRED_ARCH`,
-  `SDK_NAMES`, `SWIFT_PLATFORM_TARGET_PREFIX` and `LLVM_TARGET_TRIPLE_OS_VERSION`
-  are all the default platform's values, as are `ARCHS_STANDARD*` and
-  `VALID_ARCHS`, which list a Mac's architectures for an iOS target. The
-  `-<platform>` suffix used to be a third consequence of the same omission, and
-  cost another 30 keys with it; that one is fixed, from the platform directory in
-  `SDKROOT` rather than from `PLATFORM_NAME`, which is why it did not have to
-  wait for the rest. What remains genuinely needs a platform model: the
-  `PLATFORM_DEVELOPER_*_DIR` family, the `BUNDLE_*_FOLDER_PATH` family, and the
-  `ARCHS_STANDARD*` / `VALID_ARCHS` values, none of which can be read off a name.
-  Fixing it is a large piece of work and its own item; it is named here because
-  several smaller items are waiting on it rather than because it is the next one.
+- **The platform model, done in its first slice.** Everything above is macOS.
+  With `-sdk iphoneos` this tool used to emit macOS-shaped settings: 41
+  differing keys, nearly all of them tracing to one omission — there was no
+  platform that tracked `-sdk`. The model is now in: the selected SDK names its
+  platform, and a per-platform table carries `PLATFORM_NAME`,
+  `PLATFORM_DISPLAY_NAME`, `PLATFORM_FAMILY_NAME`, `SUPPORTED_PLATFORMS`,
+  `PLATFORM_PREFERRED_ARCH`, `SDK_NAMES`, `SWIFT_PLATFORM_TARGET_PREFIX`,
+  `LLVM_TARGET_TRIPLE_OS_VERSION`, the `ARCHS_STANDARD*` / `VALID_ARCHS`
+  values, the `PLATFORM_DEVELOPER_*_DIR` family, the `BUNDLE_*_FOLDER_PATH`
+  family, the deployment-target default and its `DEPLOYMENT_TARGET_SUGGESTED_VALUES`,
+  and `ENTITLEMENTS_DESTINATION` (which itself is per SDK name, not platform).
+  Every platform measured — `macosx`, `iphoneos`, `iphonesimulator`,
+  `appletvos`, `appletvsimulator`, `watchos`, `watchsimulator`, `xros`,
+  `xrsimulator` — now reports exactly one differing key, the `SDKROOT`
+  double-emission (462 matching on macosx, down to 440 on `xrsimulator` as the
+  shared total shrinks), and the `-<platform>`-suffix, `Release-<platform>`
+  configuration directory and `*_TEMP_DIR` families fall out of `PLATFORM_NAME`.
+  What remains in this space is the 23-settings item above, which is now a
+  question of unpicking the path groups Apple carries in its per-SDK
+  `Info.plist` rather than a question of platform shape.
 - **The 51 we emit that Apple does not**, which need auditing rather than adding:
   each one is a claim about Apple's behaviour that has not been checked. On a
   build where the SDK resolves this is 29, and the 22 that disappear with the
