@@ -399,7 +399,7 @@ audit re-measured rather than carried forward:
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
 | Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
-| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 48 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
+| Behavioural parity with Apple | **not met, now measured** — of Apple's 458 settings, 32 absent on a `-sdk macosx` build where every key's value matches, both counted per key with both tools on the same `DEVELOPER_DIR`; the 6 that differ on the default build are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
@@ -521,9 +521,9 @@ Reproduce it: give both tools `-sdk macosx`, where the SDK resolves, and every
 one of the six agrees.
 
 ```
-settings emitted   apple 484, ours 449
-  shared            420
-  only in Apple      64
+settings emitted   apple 484, ours 481
+  shared            452
+  only in Apple      32
   only in ours       29
   shared, differing   0
 ```
@@ -610,13 +610,16 @@ built on. Its value is the products directory with a trailing slash and nothing
 after it, which reads as a typo; Apple emits it that way and the tests assert
 the exact string.
 
-And the "fixed tail" rule has one exception. `GENERATED_MODULEMAP_DIR` is
+And the "fixed tail" rule had one exception. `GENERATED_MODULEMAP_DIR` is
 `GeneratedModuleMaps` on the default platform and `GeneratedModuleMaps-iphoneos`
-on another, while the other four are unsuffixed everywhere measured. The suffix
-is not reproduced, because reproducing it requires a platform name that tracks
-`-sdk` and ours does not — a suffix derived from a `PLATFORM_NAME` stuck on
-macosx would be a suffix derived from a lie, trading one wrong tail for two.
-The default-platform form is emitted and the exception is written down here.
+on another, while the other four are unsuffixed everywhere measured. That
+exception was left unreproduced for a while, on the grounds that reproducing it
+requires a platform name that tracks `-sdk` and ours does not — a suffix
+derived from a `PLATFORM_NAME` stuck on macosx would be a suffix derived from a
+lie, trading one wrong tail for two. The premise was right and the conclusion
+wrong: the name is not only in `PLATFORM_NAME`. See the configuration-directory
+section below, which reproduces the same suffix, and does it from the directory
+the SDK was found in.
 
 The next group is the ten install locations, and it is the first one where the
 prefixes actively lie. `LOCAL_LIBRARY_DIR` is `/Library` while
@@ -682,10 +685,70 @@ is the whole reason these six could be done before the platform model: nothing
 here depends on a platform, only on which SDK is in force and which bundle
 contains it.
 
+#### The configuration directory is `Release-iphoneos`
+
+Twenty-two of what remained were rooted at `SRCROOT`, and the largest part of
+them turned out to hang off one directory whose name is not what it looks like.
+A configuration's directory is `Release` on macOS and `Release-iphoneos`,
+`Release-watchos`, `Release-iphonesimulator` on the others — the platform name
+appended with a hyphen — so everything derived from it is wrong on a non-default
+platform. In this project 29 keys carry that suffix in their value; before this
+was fixed 15 of them were reported as differing and the rest were missing
+outright, which is why `-sdk iphoneos` used to show 56 differing keys and now
+shows 41.
+
+The rule is the platform name, and the platform name is not only in
+`PLATFORM_NAME`, which is where this document used to look and where it does not
+live: `PLATFORM_NAME` reports `macosx` for every platform, so a suffix taken
+from it is a suffix derived from a lie. It is also in the directory the SDK was
+found in — `.../Platforms/<Name>.platform/Developer/SDKs/<sdk>` — and
+lowercasing `<Name>` is the suffix exactly. `SDKROOT` already resolves correctly
+on every platform measured, so the name is read from a value known to be right.
+
+Verified against Apple for all nine SDKs, by name and by path, and the two
+spellings are what rule out the shortcut. `-sdk iphoneos26.5` gets
+`-iphoneos`, and so does `-sdk /…/iPhoneOS.platform/…/iPhoneOS26.5.sdk`, so
+neither the version nor the path reaches the suffix. macOS is the exception
+rather than the rule: `macosx`, `macosx26.5` and a path to the macOS SDK all get
+no suffix at all, which is why the macosx measurement alone cannot tell a correct
+implementation from one that always emits an empty suffix.
+
+#### Sixteen keys under the target's own directory
+
+With the base right, the rest of the `SRCROOT` group is one more family:
+everything else under `$(CONFIGURATION_TEMP_DIR)/$(TARGET_NAME).build`. Sixteen
+keys, and the paths are two rules rather than one, which is the whole subtlety:
+
+| | key | value under the target directory |
+| --- | --- | --- |
+| no architecture | `FILE_LIST`, `PKGINFO_FILE_PATH`, `PRECOMP_DESTINATION_DIR`, `REZ_COLLECTOR_DIR`, `REZ_OBJECTS_DIR`, `PER_VARIANT_OBJECT_FILE_DIR` | a fixed tail |
+| `CURRENT_ARCH` | `PER_ARCH_OBJECT_FILE_DIR`, `PER_ARCH_MODULE_FILE_DIR`, `PROCESSED_INFOPLIST_PATH`, `LD_DEPENDENCY_INFO_FILE`, `LD_MAP_FILE_PATH` | `Objects-normal/$(CURRENT_ARCH)/…` |
+| one per arch in `ARCHS` | `LINK_FILE_LIST_normal_<arch>`, `LM_AUX_CONST_METADATA_LIST_PATH_normal_<arch>`, `SWIFT_RESPONSE_FILE_PATH_normal_<arch>` | `Objects-normal/<arch>/…` |
+
+The second and third rows disagree about what an architecture is. The second
+says `undefined_arch`, and says it whatever `ARCHS` is set to — verified across
+`arm64`, `x86_64`, `arm64 x86_64`, `arm64 arm64e` and an empty list, because it
+is a property of being asked for settings rather than for a build. The third
+says `arm64`. An implementation that treats the two as one variable gets 15 of
+these right on macOS and all of them wrong on the other platforms.
+
+The third row is a per-architecture expansion, which is why a single-arch
+project does not exercise it: `ARCHS="arm64 x86_64"` produces six keys, not
+three, and an empty `ARCHS` produces none. The name is subscripted into the key
+*and* used as a directory component, so the table in the code carries a stem and
+an extension rather than a key.
+
+Two of them carry the target's own name, which a path derived from the key name
+gets backwards — the file is named after the product, not after the directory.
+And one looks like the rest and is not: `PROJECT_DERIVED_FILE_DIR` hangs off
+`$(OBJROOT)/$(PROJECT_NAME).build`, so it has neither the configuration nor the
+target in its path where `DERIVED_FILE_DIR` has both. Apple keeps the two one
+word apart.
+
 That exception is the visible edge of a much larger gap, and the larger gap is
 the next real item. With `-sdk iphoneos` this tool emits macOS-shaped settings:
-56 differing keys, most of them one omission — there is no platform that tracks
-`-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`, `SUPPORTED_PLATFORMS`,
+41 differing keys, nearly all of them one omission — there is no platform that
+tracks `-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`, `SUPPORTED_PLATFORMS`,
 `PLATFORM_PREFERRED_ARCH`, `SDK_NAMES` and `SWIFT_PLATFORM_TARGET_PREFIX` are all
 the default platform's values, and `ARCHS_STANDARD*` and `VALID_ARCHS` list a
 Mac's architectures for an iOS target. It reaches past the platform keys too: the
@@ -698,9 +761,9 @@ Earlier in the day, before the fixes below, the matched figures were
 apple-only 93, ours-only 51, differing 33, matching 332. Progress:
 | | before | after (project default) | after (`-sdk macosx`) |
 | | --- | --- | --- |
-| only in Apple | 93 | 67 | 48 |
+| only in Apple | 93 | 67 | 32 |
 | shared, differing | 33 | 6 | 0 |
-| shared, matching | 332 | 385 | 436 |
+| shared, matching | 332 | 385 | 452 |
 
 The two columns differ only because of the missing SDK: the default build
 cannot resolve one, so it is the weaker of the two measurements and should not
@@ -889,15 +952,16 @@ With those, the project default's 6 differences are all Apple's fallback, and
 produced by a self-build, and has been withdrawn.** It was measured after a
 build that named a tool which does not exist — the staged tree has no `xcodebuild`
 at its root — and hashed a file the build had not written. The real figure,
-produced by the procedure below, is `214472` bytes, sha256
-`d4ed9b30b9ae1319c8d2670d91171663b814b39cb42ae84f161adaf87ff9f030`, and it is
+produced by the procedure below, is `214696` bytes, sha256
+`2f00d8fd990b4b4c0968fcc516453f4a9b98ab4940aaf0403a61eb260bf7655d`, and it is
 byte-identical across two consecutive passes. It moves whenever the source does,
 so it is a property of the tree rather than a fact about the tool; the figure
-here was recomputed after adding the six per-user cache settings, which is why
-it is not the `197704` that the previous commit recorded. An earlier version of
+here was recomputed after adding the sixteen target-directory settings and the
+`-<platform>` suffix, which is why it is neither the `214472` that the previous
+commit recorded nor the `197704` before that. An earlier version of
 this paragraph also claimed the result was identical to the source tree's own
 `build/release` binary. That is not reproducible and is not claimed: the tree
-build is `178520` bytes, because it is compiled with different flags by a
+build is `195128` bytes, because it is compiled with different flags by a
 different driver. Only the two-pass equality is asserted.
 
 Three things about that procedure are worth writing down, because each one
@@ -941,10 +1005,11 @@ The rest of the gap is systematic, not incidental:
   `.` against `/Users/…/IDETools`, `BUILD_DIR` `./build` against an absolute
   path. Ours also uses `./build/Debug` where Apple uses
   `…/build/…/Release-iphoneos`-style derived directories.
-- **48 settings missing outright** where the SDK resolves, including
+- **32 settings missing outright** where the SDK resolves, including
   `ANDROID_DEPLOYMENT_TARGET`, `LEGACY_DEVELOPER_DIR`,
-  `DUMP_DEPENDENCIES_OUTPUT_PATH`, and a family of
-  `*_DEPENDENCY_INFO_FILE` / `*_MAP_FILE_PATH` linker settings.
+  `DUMP_DEPENDENCIES_OUTPUT_PATH` is no longer one of them, and neither is
+  `CCHROOT`; what is left is `PATH`, `LOCROOT`, `WORKSPACE_DIR` and a family of
+  `VERSION_INFO_*` and `*_INSTALL_PATH` values.
 - **51 we emit that Apple does not**, mostly code-signing and Clang-warning
   defaults (`AD_HOC_CODE_SIGNING_ALLOWED`, `CLANG_ENABLE_MODULES`,
   `CLANG_WARN_*`).
@@ -991,42 +1056,48 @@ measurement rather than from reading code:
   paths look plausible. The derivation now requires `usr/bin`, which every real
   Developer directory has and the repository root does not. Fixed in the
   follow-up commit; the two new assertions fail without it.
-- **The 48 settings we still do not emit**, where the SDK resolves. The note here
+- **The 32 settings we still do not emit**, where the SDK resolves. The note here
   used to call the per-arch and per-variant directories the largest group; counted,
-  they are six keys. The largest is the twenty-two `SRCROOT`-rooted file lists,
-  and it is large precisely because it is *not* one rule — `FILE_LIST`,
+  they are six keys. The largest used to be the twenty-two `SRCROOT`-rooted file
+  lists, and it was large because it was *not* one rule — `FILE_LIST`,
   `LD_MAP_FILE_PATH`, `PRECOMP_DESTINATION_DIR`, `REZ_COLLECTOR_DIR` and
-  `PKGINFO_FILE_PATH` share a prefix and nothing else. The four groups that did
-  turn out to be one rule each are done: the `OBJROOT` family
-  (`COMPOSITE_SDK_DIRS`, `GENERATED_MODULEMAP_DIR`, `SHARED_PRECOMPS_DIR`,
-  `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`), the two products-directory keys
-  (`SHARED_DERIVED_FILE_DIR`, `METAL_LIBRARY_OUTPUT_DIR`), the ten
-  `SYSTEM_*`/`LOCAL_*`/`USER_*` install locations, and the six per-user caches.
-  What is left is 48, and the measured shape of it is worth having rather than
-  guessing at: 22 rooted at `SRCROOT`, 8 under the Developer directory
-  (`PLATFORM_DIR`, `TOOLCHAIN_DIR`, the `SDK_DIR_*` pair, the two test search
-  paths), and 18 fixed values with no path in them at all. The `/var/folders`
-  group that was in that count is now empty. The `SRCROOT` group is the one worth
-  attacking next, but note that none of the 48 are rooted at
-  `CONFIGURATION_BUILD_DIR` — this document used to call them
-  "build-directory-rooted", which is wrong; they are project-rooted.
+  `PKGINFO_FILE_PATH` shared a prefix and nothing else. Sixteen of them turned out
+  to hang off the target's own directory and are now done, along with the six
+  per-user caches, which took the largest group from twenty-two to six. The five
+  groups that did turn out to be one rule each are all finished: the `OBJROOT`
+  family (`COMPOSITE_SDK_DIRS`, `GENERATED_MODULEMAP_DIR`,
+  `SHARED_PRECOMPS_DIR`, `TEMP_SANDBOX_DIR`, `UNINSTALLED_PRODUCTS_DIR`), the two
+  products-directory keys (`SHARED_DERIVED_FILE_DIR`,
+  `METAL_LIBRARY_OUTPUT_DIR`), the ten `SYSTEM_*`/`LOCAL_*`/`USER_*` install
+  locations, the six caches, and the sixteen under the target directory. What is
+  left is 32, and the measured shape of it is worth having rather than guessing
+  at: 6 rooted at `SRCROOT`, 8 under the Developer directory (`PLATFORM_DIR`,
+  `TOOLCHAIN_DIR`, the `SDK_DIR_*` pair, the two test search paths, `PATH`,
+  `XCODE_APP_SUPPORT_DIR`), and 18 fixed values with no path in them at all. The
+  `/var/folders` group that was in the original count is now empty. The `SRCROOT`
+  group is down to the four project-rooted keys and the two trailing-space search
+  paths, and it is the one worth attacking next. One correction to a claim this
+  document used to make: two of the six *are* rooted at
+  `CONFIGURATION_BUILD_DIR` — `LIBRARY_SEARCH_PATHS` and `REZ_SEARCH_PATHS`, both
+  the products directory with a trailing space — so "none are
+  build-directory-rooted" was wrong twice over, and the group is not purely
+  project-rooted either.
 - **A platform model, which is the thing blocking most of the rest.** Everything
   above is macOS. With `-sdk iphoneos` this tool emits macOS-shaped settings:
-  56 differing keys, and nearly all of them trace to one omission — it has no
+  41 differing keys, and nearly all of them trace to one omission — it has no
   platform that tracks `-sdk`. `PLATFORM_NAME`, `PLATFORM_DISPLAY_NAME`,
   `PLATFORM_FAMILY_NAME`, `SUPPORTED_PLATFORMS`, `PLATFORM_PREFERRED_ARCH`,
   `SDK_NAMES`, `SWIFT_PLATFORM_TARGET_PREFIX` and `LLVM_TARGET_TRIPLE_OS_VERSION`
   are all the default platform's values, as are `ARCHS_STANDARD*` and
-  `VALID_ARCHS`, which list a Mac's architectures for an iOS target. Two
-  consequences reach further than the platform keys themselves: the configuration
-  directory is `Release-iphoneos` rather than `Release`, so every derived
-  `*_TEMP_DIR` is wrong too, and `GENERATED_MODULEMAP_DIR` is
-  `GeneratedModuleMaps-iphoneos`, the one key in the family just implemented
-  whose tail is not fixed. That exception is left unreproduced on purpose — a
-  suffix derived from a `PLATFORM_NAME` that does not track `-sdk` would be a
-  suffix derived from a lie. Fixing the platform model is a large piece of work
-  and its own item; it is named here because several smaller items are waiting on
-  it rather than because it is the next one.
+  `VALID_ARCHS`, which list a Mac's architectures for an iOS target. The
+  `-<platform>` suffix used to be a third consequence of the same omission, and
+  cost another 30 keys with it; that one is fixed, from the platform directory in
+  `SDKROOT` rather than from `PLATFORM_NAME`, which is why it did not have to
+  wait for the rest. What remains genuinely needs a platform model: the
+  `PLATFORM_DEVELOPER_*_DIR` family, the `BUNDLE_*_FOLDER_PATH` family, and the
+  `ARCHS_STANDARD*` / `VALID_ARCHS` values, none of which can be read off a name.
+  Fixing it is a large piece of work and its own item; it is named here because
+  several smaller items are waiting on it rather than because it is the next one.
 - **The 51 we emit that Apple does not**, which need auditing rather than adding:
   each one is a claim about Apple's behaviour that has not been checked. On a
   build where the SDK resolves this is 29, and the 22 that disappear with the

@@ -803,6 +803,135 @@ else
         "no macOS SDK stat cache path in this developer directory"
 fi
 
+# The -<platform> suffix on a configuration's directory name.  This is the
+# thing the document used to record as not reproducible, on the grounds that
+# PLATFORM_NAME does not track -sdk.  The name is not only in PLATFORM_NAME, so
+# the tests below pin the rule rather than the macosx case only: a suffix that
+# is always empty looks identical to a suffix that is always right.
+ctd_macosx=$(setting "$PROJ" CONFIGURATION_TEMP_DIR -sdk macosx)
+is "macOS carries no platform suffix" \
+    "$(setting "$PROJ" OBJROOT -sdk macosx)/IDETools.build/Release" \
+    "$ctd_macosx"
+
+# The suffix only exists on a platform that is not the default one, so the
+# assertions that mean anything need a non-default SDK to resolve.  CommandLineTools
+# has no iOS or watchOS platform at all, and an absent SDK would leave the suffix
+# empty on both sides of the comparison and pass without testing anything.
+iosroot=$(setting "$PROJ" SDKROOT -sdk iphoneos)
+case $iosroot in
+*/iPhoneOS*)
+    ob_ios=$(setting "$PROJ" OBJROOT -sdk iphoneos)
+    is "iphoneos takes the suffix" \
+        "$ob_ios/IDETools.build/Release-iphoneos" \
+        "$(setting "$PROJ" CONFIGURATION_TEMP_DIR -sdk iphoneos)"
+    is "watchos does, and it is the platform and not a version" \
+        "$(setting "$PROJ" OBJROOT -sdk watchos)/IDETools.build/Release-watchos" \
+        "$(setting "$PROJ" CONFIGURATION_TEMP_DIR -sdk watchos)"
+    # A versioned SDK name and a path to the SDK both resolve to the same
+    # platform, so neither leaks into the suffix.  These are the two spellings
+    # where an implementation that trims digits off the name goes wrong.
+    is "a versioned SDK name does not put a version in the suffix" \
+        "$ob_ios/IDETools.build/Release-iphoneos" \
+        "$(setting "$PROJ" CONFIGURATION_TEMP_DIR \
+            -sdk "$(printf '%s' "$iosroot" | sed 's|.*/||; s|[.]sdk$||')")"
+    is "a path to the SDK does not put a path in the suffix" \
+        "$ob_ios/IDETools.build/Release-iphoneos" \
+        "$(setting "$PROJ" CONFIGURATION_TEMP_DIR -sdk "$iosroot")"
+    # The one other key that takes the suffix, and the reason it was documented
+    # as stuck: four of the five OBJROOT tails are unsuffixed on every platform.
+    is "GENERATED_MODULEMAP_DIR takes the same suffix" \
+        "$ob_ios/GeneratedModuleMaps-iphoneos" \
+        "$(setting "$PROJ" GENERATED_MODULEMAP_DIR -sdk iphoneos)"
+    is "and none of the other four do" \
+        "$ob_ios/CompositeSDKs" \
+        "$(setting "$PROJ" COMPOSITE_SDK_DIRS -sdk iphoneos)"
+    ;;
+*)
+    skipt "the -<platform> suffix on a non-default platform" \
+        "no iOS platform in this developer directory"
+    ;;
+esac
+
+# Sixteen keys under the target's own directory.  Pinned against an
+# OBJROOT= override, because a hardcoded path would pass whether or not the
+# derivation follows the build location.
+troot="$scratch/tb/IDETools.build"
+for k in FILE_LIST PKGINFO_FILE_PATH PRECOMP_DESTINATION_DIR REZ_COLLECTOR_DIR; do
+  case $k in
+    FILE_LIST) tail=Objects/LinkFileList ;;
+    PKGINFO_FILE_PATH) tail=PkgInfo ;;
+    PRECOMP_DESTINATION_DIR) tail=PrefixHeaders ;;
+    REZ_COLLECTOR_DIR) tail=ResourceManagerResources ;;
+  esac
+  is "$k hangs off the target directory" "$troot/Release/xcodebuild.build/$tail" \
+      "$(setting "$PROJ" "$k" OBJROOT="$scratch/tb" -sdk macosx)"
+done
+is "REZ_OBJECTS_DIR is the collector directory plus Objects" \
+    "$troot/Release/xcodebuild.build/ResourceManagerResources/Objects" \
+    "$(setting "$PROJ" REZ_OBJECTS_DIR OBJROOT="$scratch/tb" -sdk macosx)"
+# These two carry the target's name, so a key-name-derived path gets them
+# backwards -- the file is named after the product, not after the directory.
+is "DUMP_DEPENDENCIES_OUTPUT_PATH carries the target's name" \
+    "$troot/Release/xcodebuild.build/xcodebuild-BuildDependencyInfo.json" \
+    "$(setting "$PROJ" DUMP_DEPENDENCIES_OUTPUT_PATH OBJROOT="$scratch/tb" -sdk macosx)"
+is "LD_MAP_FILE_PATH does too" \
+    "$troot/Release/xcodebuild.build/xcodebuild-LinkMap-normal-undefined_arch.txt" \
+    "$(setting "$PROJ" LD_MAP_FILE_PATH OBJROOT="$scratch/tb" -sdk macosx)"
+# CURRENT_ARCH, not the arch: this is undefined_arch whatever ARCHS says,
+# because -showBuildSettings is being asked for settings and not for a build.
+is "PER_ARCH_OBJECT_FILE_DIR uses CURRENT_ARCH, not ARCHS" \
+    "$troot/Release/xcodebuild.build/Objects-normal/undefined_arch" \
+    "$(setting "$PROJ" PER_ARCH_OBJECT_FILE_DIR OBJROOT="$scratch/tb" ARCHS=arm64 -sdk macosx)"
+is "and PER_ARCH_MODULE_FILE_DIR is the same directory" \
+    "$(setting "$PROJ" PER_ARCH_OBJECT_FILE_DIR -sdk macosx)" \
+    "$(setting "$PROJ" PER_ARCH_MODULE_FILE_DIR -sdk macosx)"
+is "PER_VARIANT_OBJECT_FILE_DIR is its parent" \
+    "$troot/Release/xcodebuild.build/Objects-normal" \
+    "$(setting "$PROJ" PER_VARIANT_OBJECT_FILE_DIR OBJROOT="$scratch/tb" -sdk macosx)"
+# The two groups above disagree about what an architecture is -- undefined_arch
+# where the per-arch files say arm64 -- so this is the assertion that keeps them
+# from being merged into one.
+is "the per-arch files use the arch from ARCHS instead" \
+    "$troot/Release/xcodebuild.build/Objects-normal/arm64/xcodebuild.LinkFileList" \
+    "$(setting "$PROJ" LINK_FILE_LIST_normal_arm64 OBJROOT="$scratch/tb" -sdk macosx)"
+
+# One key per arch in ARCHS, subscripted into the key name.  A single arch is
+# the only case the ordinary project exercises, so the multi-arch and empty
+# cases are what distinguish an implementation from a hardcoded arm64.
+multi=$("$TOOL" -project "$PROJ" -showBuildSettings ARCHS="arm64 x86_64" 2>/dev/null |
+    grep -c '^    LINK_FILE_LIST_normal_')
+is "two arches give two LINK_FILE_LIST keys" "2" "$multi"
+is "and one SWIFT_RESPONSE_FILE_PATH key each" "2" \
+    "$("$TOOL" -project "$PROJ" -showBuildSettings ARCHS="arm64 x86_64" 2>/dev/null |
+        grep -c '^    SWIFT_RESPONSE_FILE_PATH_normal_')"
+is "x86_64 is spelled as itself, not as the first arch" \
+    "$troot/Release/xcodebuild.build/Objects-normal/x86_64/xcodebuild.SwiftFileList" \
+    "$(setting "$PROJ" SWIFT_RESPONSE_FILE_PATH_normal_x86_64 OBJROOT="$scratch/tb" ARCHS=x86_64 -sdk macosx)"
+is "an empty ARCHS gives none of them" "" \
+    "$(setting "$PROJ" LINK_FILE_LIST_normal_arm64 ARCHS= -sdk macosx)"
+
+# One word apart, and not the same directory: this one hangs off the project's
+# build directory, so it has neither the configuration nor the target in it.
+is "PROJECT_DERIVED_FILE_DIR is the project's, not the target's" \
+    "$scratch/tb/IDETools.build/DerivedSources" \
+    "$(setting "$PROJ" PROJECT_DERIVED_FILE_DIR OBJROOT="$scratch/tb" -sdk macosx)"
+is "and it is not the one DERIVED_FILE_DIR names" "1" \
+    "$([ "$(setting "$PROJ" PROJECT_DERIVED_FILE_DIR OBJROOT="$scratch/tb" -sdk macosx)" != \
+        "$(setting "$PROJ" DERIVED_FILE_DIR OBJROOT="$scratch/tb" -sdk macosx)" ] && echo 1)"
+# The whole family follows the platform suffix, which is the reason the base
+# was fixed before these keys.  On a platform where the suffix is wrong these
+# are all wrong too, and they are plausible-looking paths.
+is "and it does not take the platform suffix" \
+    "$scratch/tb/IDETools.build/DerivedSources" \
+    "$(setting "$PROJ" PROJECT_DERIVED_FILE_DIR OBJROOT="$scratch/tb" -sdk macosx)"
+case $iosroot in
+*/iPhoneOS*)
+    is "while the target's own directories do" \
+        "$troot/Release-iphoneos/xcodebuild.build/PkgInfo" \
+        "$(setting "$PROJ" PKGINFO_FILE_PATH OBJROOT="$scratch/tb" -sdk iphoneos)"
+    ;;
+esac
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

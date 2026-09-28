@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 #include <ctype.h>
 #include <errno.h>
@@ -505,10 +506,70 @@ static void prefix_search_path(char *out, size_t outsz, const char *prefix,
  * thirteen of them.  Reading the merged values back and deriving again is what
  * makes OBJROOT authoritative, which is where Apple puts the whole chain.
  */
+/*
+ * The -<platform> suffix Apple puts on a configuration's directory name, and
+ * the reason this document used to say it could not be reproduced.
+ *
+ * It used to say: reproducing it needs a platform name that tracks -sdk, and
+ * PLATFORM_NAME does not, so the default-platform form is emitted.  That is
+ * true of PLATFORM_NAME and it was the wrong thing to conclude, because the
+ * name is not only available in PLATFORM_NAME.  It is in the directory the SDK
+ * was found in: .../Platforms/<Name>.platform/Developer/SDKs/<sdk>, and
+ * lowercasing <Name> is the suffix exactly.  Verified against Apple for macosx
+ * (-> no suffix at all), iphoneos, iphonesimulator, appletvos,
+ * appletvsimulator, watchos, watchsimulator, xros and xrsimulator, and for all
+ * of those reached by SDK path as well as by name, so the version and the
+ * .sdk suffix never enter into it.  A path to the iOS SDK gets -iphoneos; a
+ * path to the macOS SDK, and the macOS SDK by any spelling, get nothing.
+ *
+ * Reading it out of SDKROOT is deliberate: SDKROOT already resolves correctly
+ * on every platform measured, so this asks the same question of a value that is
+ * known to be right rather than of one that is known to be wrong.
+ */
+static void platform_suffix(const settings_table *t, char *out, size_t outsz)
+{
+	const char *sdkroot;
+	const char *p, *start;
+
+	out[0] = '\0';
+
+	sdkroot = settings_get(t, "SDKROOT");
+	if (sdkroot == NULL || *sdkroot == '\0')
+		return;
+
+	p = strstr(sdkroot, "/Platforms/");
+	if (p == NULL)
+		return;
+	start = p + strlen("/Platforms/");
+	p = strstr(start, ".platform");
+	if (p == NULL || p == start)
+		return;
+
+	if ((size_t)(p - start) + 1 >= outsz)
+		return;
+
+	/*
+	 * macOS is the default platform and carries no suffix; every other
+	 * one does.  Compared case-insensitively because the directory is
+	 * MacOSX and the answer to write is macosx.
+	 */
+	if ((size_t)(p - start) == 6 && strncasecmp(start, "MacOSX", 6) == 0)
+		return;
+
+	snprintf(out, outsz, "-%.*s", (int)(p - start), start);
+	{
+		char *w;
+
+		for (w = out + 1; *w != '\0'; w++)
+			*w = (char)tolower((unsigned char)*w);
+	}
+}
+
 static void derive_build_dirs(settings_table *t)
 {
 	const char *objroot, *symroot, *cfg_build, *config;
 	char proj_dir[PATH_MAX], cfg_dir[PATH_MAX];
+	char suffix[32];
 	const char *pname, *tname;
 
 	objroot = settings_get(t, "OBJROOT");
@@ -530,7 +591,17 @@ static void derive_build_dirs(settings_table *t)
 	if (config == NULL || *config == '\0')
 		config = "Release";
 
-	snprintf(cfg_dir, sizeof(cfg_dir), "%s/%s", proj_dir, config);
+	/*
+	 * The configuration's own directory is named Release, and
+	 * Release-iphoneos, and Release-watchos, and so on for every
+	 * platform that is not the default one.  Everything derived from it
+	 * below -- the target directory, the object files, the linker map --
+	 * moves with it, which is why this is computed once here.
+	 */
+	platform_suffix(t, suffix, sizeof suffix);
+
+	snprintf(cfg_dir, sizeof(cfg_dir), "%s/%s%s", proj_dir, config,
+	    suffix);
 	settings_set(t, "CONFIGURATION_TEMP_DIR", cfg_dir);
 
 	/*
@@ -543,30 +614,36 @@ static void derive_build_dirs(settings_table *t)
 	 * OBJROOT= override moves them too, which is the whole point of
 	 * making OBJROOT authoritative.
 	 *
-	 * One of the five does not have a fixed tail.  Apple emits
+	 * One of the five does not have a fixed tail: Apple emits
 	 * GeneratedModuleMaps on the default platform and
-	 * GeneratedModuleMaps-iphoneos on another, while the other four are
-	 * unsuffixed on every platform measured.  The suffix is not reproduced
-	 * here, because reproducing it needs a platform name that tracks -sdk
-	 * and PLATFORM_NAME does not -- it reports macosx for every platform.
-	 * Deriving a suffix from a key that cannot be trusted would turn one
-	 * wrong tail into two, so the default-platform form is emitted and the
-	 * exception is recorded in docs/IDETools.md.
+	 * GeneratedModuleMaps-iphoneos on another, so it takes the same
+	 * -<platform> suffix as the configuration directory.  This used to
+	 * be documented as not reproducible, on the grounds that it needs a
+	 * platform name that tracks -sdk and PLATFORM_NAME does not; see
+	 * platform_suffix() above, which finds the name somewhere that does
+	 * track it.
 	 */
 	{
-		static const struct { const char *key, *tail; } d[] = {
-			{ "COMPOSITE_SDK_DIRS",		"CompositeSDKs" },
-			{ "GENERATED_MODULEMAP_DIR",	"GeneratedModuleMaps" },
-			{ "SHARED_PRECOMPS_DIR",		"SharedPrecompiledHeaders" },
-			{ "TEMP_SANDBOX_DIR",		"TemporaryTaskSandboxes" },
-			{ "UNINSTALLED_PRODUCTS_DIR",	"UninstalledProducts" },
+		static const struct {
+			const char *key, *tail;
+			int suffixed;		/* takes the -<platform> suffix */
+		} d[] = {
+			{ "COMPOSITE_SDK_DIRS",		"CompositeSDKs",		0 },
+			{ "GENERATED_MODULEMAP_DIR",	"GeneratedModuleMaps",	1 },
+			{ "SHARED_PRECOMPS_DIR",	"SharedPrecompiledHeaders", 0 },
+			{ "TEMP_SANDBOX_DIR",		"TemporaryTaskSandboxes",	0 },
+			{ "UNINSTALLED_PRODUCTS_DIR",	"UninstalledProducts",	0 },
 		};
 		char path[PATH_MAX];
 		size_t i;
 
 		for (i = 0; i < sizeof(d) / sizeof(d[0]); i++) {
-			snprintf(path, sizeof(path), "%s/%s", objroot,
-			    d[i].tail);
+			if (d[i].suffixed)
+				snprintf(path, sizeof(path), "%s/%s%s",
+				    objroot, d[i].tail, suffix);
+			else
+				snprintf(path, sizeof(path), "%s/%s",
+				    objroot, d[i].tail);
 			settings_set(t, d[i].key, path);
 		}
 	}
@@ -705,6 +782,138 @@ static void derive_build_dirs(settings_table *t)
 
 		snprintf(sub, sizeof(sub), "%s/FixedFiles", tgt);
 		settings_set(t, "FIXED_FILES_DIR", sub);
+
+		/*
+		 * Sixteen more keys, and the largest remaining group is this
+		 * one: everything else under the target's own directory.  The
+		 * paths are not one rule but two, and the split is the
+		 * interesting part.
+		 *
+		 * One group is spelled with CURRENT_ARCH, which in
+		 * -showBuildSettings is "undefined_arch" -- and stays
+		 * "undefined_arch" whatever ARCHS is set to, verified across
+		 * arm64, x86_64, arm64+x86_64, arm64+arm64e and an empty
+		 * list.  It is a property of asking for settings without
+		 * asking for a build, not of the target.
+		 *
+		 * The other group is spelled with the architecture itself,
+		 * one key per entry in ARCHS, subscripted into the key name
+		 * and used as a directory component in the value.  So with
+		 * ARCHS=arm64 x86_64 there are six of them, and with an
+		 * empty ARCHS there are none.  Note the two groups disagree
+		 * about what an architecture is -- the first says
+		 * undefined_arch where the second says arm64 -- because Apple
+		 * resolves them at different times.
+		 */
+		{
+			char objs[PATH_MAX], archdir[PATH_MAX];
+			const char *arch;
+			size_t i;
+
+			snprintf(objs, sizeof(objs), "%s/Objects-normal", tgt);
+			settings_set(t, "PER_VARIANT_OBJECT_FILE_DIR", objs);
+
+			arch = settings_get(t, "CURRENT_ARCH");
+			if (arch != NULL && *arch != '\0') {
+				snprintf(archdir, sizeof(archdir),
+				         "%s/%s", objs, arch);
+				settings_set(t, "PER_ARCH_OBJECT_FILE_DIR",
+				    archdir);
+				settings_set(t, "PER_ARCH_MODULE_FILE_DIR",
+				    archdir);
+
+				snprintf(sub, sizeof(sub),
+				    "%s/Processed-Info.plist", archdir);
+				settings_set(t, "PROCESSED_INFOPLIST_PATH", sub);
+
+				snprintf(sub, sizeof(sub),
+				    "%s/%s_dependency_info.dat", archdir, tname);
+				settings_set(t, "LD_DEPENDENCY_INFO_FILE", sub);
+
+				snprintf(sub, sizeof(sub),
+				    "%s/%s-LinkMap-normal-%s.txt", tgt, tname,
+				    arch);
+				settings_set(t, "LD_MAP_FILE_PATH", sub);
+			}
+
+			/* Five more with neither the name nor an arch in them. */
+			{
+				static const struct {
+					const char *key, *tail;
+				} d[] = {
+					{ "FILE_LIST",			"Objects/LinkFileList" },
+					{ "PKGINFO_FILE_PATH",		"PkgInfo" },
+					{ "PRECOMP_DESTINATION_DIR",	"PrefixHeaders" },
+					{ "REZ_COLLECTOR_DIR",		"ResourceManagerResources" },
+					{ "REZ_OBJECTS_DIR",		"ResourceManagerResources/Objects" },
+				};
+
+				for (i = 0; i < sizeof(d) / sizeof(d[0]); i++) {
+					snprintf(sub, sizeof(sub), "%s/%s",
+					    tgt, d[i].tail);
+					settings_set(t, d[i].key, sub);
+				}
+			}
+
+			snprintf(sub, sizeof(sub),
+			    "%s/%s-BuildDependencyInfo.json", tgt, tname);
+			settings_set(t, "DUMP_DEPENDENCIES_OUTPUT_PATH", sub);
+
+			/*
+			 * The three per-architecture files.  The key is
+			 * the family name with _normal_<arch> on the end,
+			 * so the table carries the stem rather than a
+			 * key, and the arch is not something that can be
+			 * interpolated into a static string.
+			 */
+			{
+				static const struct {
+					const char *stem, *ext;
+				} pa[] = {
+					{ "LINK_FILE_LIST",			".LinkFileList" },
+					{ "LM_AUX_CONST_METADATA_LIST_PATH",	".SwiftConstValuesFileList" },
+					{ "SWIFT_RESPONSE_FILE_PATH",		".SwiftFileList" },
+				};
+				const char *archs = settings_get(t, "ARCHS");
+
+				if (archs != NULL && *archs != '\0') {
+					char list[PATH_MAX], *save, *tok;
+
+					snprintf(list, sizeof(list), "%s", archs);
+					for (tok = strtok_r(list, " \t", &save);
+					     tok != NULL;
+					     tok = strtok_r(NULL, " \t", &save)) {
+						char dir[PATH_MAX];
+
+						snprintf(dir, sizeof(dir),
+						    "%s/%s", objs, tok);
+						for (i = 0; i < sizeof(pa) /
+						    sizeof(pa[0]); i++) {
+							char key[128];
+
+							snprintf(key, sizeof(key),
+							    "%s_normal_%s",
+							    pa[i].stem, tok);
+							snprintf(sub, sizeof(sub),
+							    "%s/%s%s", dir,
+							    tname, pa[i].ext);
+							settings_set(t, key, sub);
+						}
+					}
+				}
+			}
+		}
+
+		/*
+		 * One that looks like the block above and is not in it.
+		 * PROJECT_DERIVED_FILE_DIR hangs off the *project's*
+		 * directory, so it has neither the configuration nor the
+		 * target in its path, where DERIVED_FILE_DIR has both.
+		 * Apple keeps the two one word apart; matching either to
+		 * the other is the mistake this comment is for.
+		 */
+		snprintf(sub, sizeof(sub), "%s/DerivedSources", proj_dir);
+		settings_set(t, "PROJECT_DERIVED_FILE_DIR", sub);
 	}
 }
 
