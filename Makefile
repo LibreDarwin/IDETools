@@ -101,13 +101,15 @@ LOADER := $(BUILD_DIR)/libxcodebuildLoader.dylib
 LOADER_OBJS := $(OBJDIR)/xcodebuildLoader.o
 
 # Every object below is reached: the five xcodebuild/ files are the tool
-# itself, and the three common/ files are the SDK/toolchain locator, the
-# Developer-dir resolver, and the property-list reader both of them consult.
+# itself, and the four common/ files are the SDK/toolchain locator, the
+# Developer-dir resolver, the property-list reader both of them consult, and
+# a path helper.
 # Reading a plist goes through CoreFoundation, which the tool already links,
 # so there is no parser here.
 XCODEBUILD_OBJS := $(OBJDIR)/xcodebuild.o $(OBJDIR)/build.o $(OBJDIR)/project.o \
 		   $(OBJDIR)/settings.o $(OBJDIR)/ini.o
-COMMON_OBJS     := $(OBJDIR)/cfplist.o $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o
+COMMON_OBJS     := $(OBJDIR)/cfplist.o $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o \
+		   $(OBJDIR)/xcpath.o
 
 XCODEBUILD_ALL_OBJS := $(XCODEBUILD_OBJS) $(COMMON_OBJS)
 
@@ -127,12 +129,12 @@ $(OBJDIR)/xcodebuildLoader.o: src/loader/xcodebuildLoader.c src/loader/xcodebuil
 	$(CC) $(CFLAGS) -I src/loader -c -o $@ src/loader/xcodebuildLoader.c
 
 $(OBJDIR)/xcodebuild.o: src/xcodebuild/xcodebuild.c src/xcodebuild/xcodebuild.h \
-                       src/common/cfplist.h src/common/devpath.h
+                       src/common/cfplist.h src/common/devpath.h src/common/xcpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/xcodebuild.c
 
 $(OBJDIR)/build.o: src/xcodebuild/build.c src/xcodebuild/xcodebuild.h \
-                   src/xcodebuild/project.h
+                   src/xcodebuild/project.h src/common/xcpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/build.c
 
@@ -149,6 +151,10 @@ $(OBJDIR)/settings.o: src/xcodebuild/settings.c src/xcodebuild/xcodebuild.h \
 $(OBJDIR)/ini.o: src/xcodebuild/ini.c src/xcodebuild/ini.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/ini.c
+
+$(OBJDIR)/xcpath.o: src/common/xcpath.c src/common/xcpath.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ src/common/xcpath.c
 
 $(OBJDIR)/cfplist.o: src/common/cfplist.c src/common/cfplist.h
 	@mkdir -p $(OBJDIR)
