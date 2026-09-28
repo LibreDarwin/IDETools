@@ -533,6 +533,44 @@ static void derive_build_dirs(settings_table *t)
 	settings_set(t, "CONFIGURATION_TEMP_DIR", cfg_dir);
 
 	/*
+	 * Five more directories are OBJROOT plus a fixed tail -- the same shape
+	 * as PROJECT_TEMP_DIR above, and spelled out rather than derived from
+	 * the key names, because the names do not imply the location:
+	 * SHARED_PRECOMPS_DIR sits nowhere near SHARED_anything, and
+	 * COMPOSITE_SDK_DIRS is plural where GENERATED_MODULEMAP_DIR is
+	 * singular.  They are derived here rather than seeded so that an
+	 * OBJROOT= override moves them too, which is the whole point of
+	 * making OBJROOT authoritative.
+	 *
+	 * One of the five does not have a fixed tail.  Apple emits
+	 * GeneratedModuleMaps on the default platform and
+	 * GeneratedModuleMaps-iphoneos on another, while the other four are
+	 * unsuffixed on every platform measured.  The suffix is not reproduced
+	 * here, because reproducing it needs a platform name that tracks -sdk
+	 * and PLATFORM_NAME does not -- it reports macosx for every platform.
+	 * Deriving a suffix from a key that cannot be trusted would turn one
+	 * wrong tail into two, so the default-platform form is emitted and the
+	 * exception is recorded in docs/IDETools.md.
+	 */
+	{
+		static const struct { const char *key, *tail; } d[] = {
+			{ "COMPOSITE_SDK_DIRS",		"CompositeSDKs" },
+			{ "GENERATED_MODULEMAP_DIR",	"GeneratedModuleMaps" },
+			{ "SHARED_PRECOMPS_DIR",		"SharedPrecompiledHeaders" },
+			{ "TEMP_SANDBOX_DIR",		"TemporaryTaskSandboxes" },
+			{ "UNINSTALLED_PRODUCTS_DIR",	"UninstalledProducts" },
+		};
+		char path[PATH_MAX];
+		size_t i;
+
+		for (i = 0; i < sizeof(d) / sizeof(d[0]); i++) {
+			snprintf(path, sizeof(path), "%s/%s", objroot,
+			    d[i].tail);
+			settings_set(t, d[i].key, path);
+		}
+	}
+
+	/*
 	 * Where the products go.  TARGET_BUILD_DIR follows
 	 * CONFIGURATION_BUILD_DIR, which a project may have pointed
 	 * somewhere else; Apple resolves it the same way, so a project
@@ -565,6 +603,28 @@ static void derive_build_dirs(settings_table *t)
 				settings_set(t, "CODESIGNING_FOLDER_PATH", path);
 			}
 			settings_set(t, "DWARF_DSYM_FOLDER_PATH", cfg_build);
+		}
+
+		/*
+		 * Two more off the products directory.  METAL_LIBRARY_OUTPUT_DIR
+		 * is the directory with a trailing slash and nothing after it,
+		 * which is exactly what Apple emits; trimming it reads as a
+		 * cleanup and is a mismatch.
+		 *
+		 * It is not platform-gated, which was the second wrong guess
+		 * here: Apple emits it for macOS, iOS, tvOS and watchOS alike.
+		 * So it is emitted unconditionally, and deliberately not gated on
+		 * PLATFORM_NAME -- that key does not track -sdk, reporting macosx
+		 * for every platform, so a gate on it would be a gate on a lie.
+		 */
+		{
+			char path[PATH_MAX];
+
+			snprintf(path, sizeof(path), "%s/DerivedSources", cfg_build);
+			settings_set(t, "SHARED_DERIVED_FILE_DIR", path);
+
+			snprintf(path, sizeof(path), "%s/", cfg_build);
+			settings_set(t, "METAL_LIBRARY_OUTPUT_DIR", path);
 		}
 
 		/*

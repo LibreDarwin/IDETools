@@ -575,6 +575,51 @@ is "a real developer layout is still recognised" \
         -project "$PROJ" -showBuildSettings 2>/dev/null |
         sed -n 's/^    DEVELOPER_DIR = //p' | head -1)"
 
+# Seven directories off OBJROOT and CONFIGURATION_BUILD_DIR.  Derived rather
+# than seeded, so the first assertion below is the one that matters: the tails
+# have to follow an OBJROOT= override, or a caller who redirects the build gets
+# settings pointing into a tree it is not building.  Pinned absolutely first --
+# two absent keys agree with each other perfectly.
+objroot_abs=$("$TOOL" -project "$PROJ" -showBuildSettings OBJROOT="$scratch/ob" 2>/dev/null |
+    sed -n 's/^    OBJROOT = //p' | head -1)
+is "OBJROOT override is in force" "$scratch/ob" "$objroot_abs"
+for tail in CompositeSDKs GeneratedModuleMaps SharedPrecompiledHeaders \
+            TemporaryTaskSandboxes UninstalledProducts; do
+  case $tail in
+    CompositeSDKs) key=COMPOSITE_SDK_DIRS ;;
+    GeneratedModuleMaps) key=GENERATED_MODULEMAP_DIR ;;
+    SharedPrecompiledHeaders) key=SHARED_PRECOMPS_DIR ;;
+    TemporaryTaskSandboxes) key=TEMP_SANDBOX_DIR ;;
+    UninstalledProducts) key=UNINSTALLED_PRODUCTS_DIR ;;
+  esac
+  is "$key follows the OBJROOT override" \
+      "$scratch/ob/$tail" "$(setting "$PROJ" "$key" OBJROOT="$scratch/ob")"
+done
+# None of the five names imply their location, which is why the tails are
+# written out above rather than derived from the keys.
+is "SHARED_PRECOMPS_DIR is not under SHARED_anything" \
+    "$scratch/ob/SharedPrecompiledHeaders" \
+    "$(setting "$PROJ" SHARED_PRECOMPS_DIR OBJROOT="$scratch/ob")"
+is "and two of the five differ only in plural" \
+    "$scratch/ob/GeneratedModuleMaps" \
+    "$(setting "$PROJ" GENERATED_MODULEMAP_DIR OBJROOT="$scratch/ob")"
+
+cbd_abs=$("$TOOL" -project "$PROJ" -showBuildSettings CONFIGURATION_BUILD_DIR="$scratch/cb" 2>/dev/null |
+    sed -n 's/^    CONFIGURATION_BUILD_DIR = //p' | head -1)
+is "SHARED_DERIVED_FILE_DIR follows the products directory" \
+    "$scratch/cb/DerivedSources" \
+    "$(setting "$PROJ" SHARED_DERIVED_FILE_DIR CONFIGURATION_BUILD_DIR="$scratch/cb")"
+# The trailing slash is what Apple emits.  It reads as a typo and normalising
+# it away is a mismatch, so the assertion is on the exact string.
+is "METAL_LIBRARY_OUTPUT_DIR keeps its trailing slash" \
+    "$scratch/cb/" \
+    "$(setting "$PROJ" METAL_LIBRARY_OUTPUT_DIR CONFIGURATION_BUILD_DIR="$scratch/cb")"
+# Not platform-gated: Apple emits it for iOS and tvOS too, so a macosx gate
+# would suppress the key on those platforms rather than reproduce it.
+is "and it is emitted for a non-macOS platform as well" \
+    "$scratch/cb/" \
+    "$(setting "$PROJ" METAL_LIBRARY_OUTPUT_DIR CONFIGURATION_BUILD_DIR="$scratch/cb" -sdk iphoneos)"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
