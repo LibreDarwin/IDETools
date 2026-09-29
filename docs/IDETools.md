@@ -315,13 +315,41 @@ process declines to relaunch again. The no-runtime case reports
 the higher-sorting clang version deterministically over repeated runs (Xcode
 ships both `21` and `21.0.0`).
 
-### 3. `xcindex-test` — out of reach
+### 3. `xcindex-test` — the console, reimplemented
 
 383,584 bytes linking AppKit, libedit, Foundation, `DVTFoundation`,
 `IDEFoundation` and a wide `libswift*` set including RegexBuilder and
-StringProcessing. It is a test harness for the source index and depends on IDE
-frameworks we have no path to. Record it as IDETools-owned but **not a
-LibreDarwin goal** unless the index work is ever picked up.
+StringProcessing. It is a test harness for the source index, and the index
+itself depends on IDE frameworks we have no path to.
+
+The index is out of reach; its command line is not. `src/xcindex-test/` is a C
+reimplementation of the tool's front end — option parsing, the target-selection
+algebra, the five deterministic commands (`help`, `beep`, `list-schemes`,
+`list-indexables`, `print-stats`) and the libedit-style REPL — built on
+`src/xcodebuild/project.c` for the project file and scheme reading. It matches
+Apple byte for byte on all of that, timings aside; `make parity` diffs the two
+live and reports 142 cases, all passing.
+
+Two things about the tool's own command line are worth recording, because both
+look like bugs and neither is. A `-project` with no value is not a missing
+project: the option being present is what is required, and the open simply has
+nothing to open, so the run succeeds against an empty workspace. And a path is
+only a project if it ends in `.xcodeproj`; anything else — a directory, a path
+to the pbxproj, a name that does not exist — opens nothing and is not an error
+either, so the "file doesn't exist" message appears only for a path that claimed
+to be a bundle. On a REPL line `--` ends the command rather than separating two,
+so `list-schemes -- print-stats` fails on the `--` and not on the second action.
+
+The seven engine-backed actions (`prepare`, `create-build-description`,
+`print-build-description`, `print-build-description-targets`,
+`print-destination`, `print-index-build-settings`, `index-files`) are a
+different matter: their *work* is XCBuild, which this build does not have. What
+is done is everything the console settles before the engine is reached — which
+actions insist on an explicit target set, which resolve `-target` and the scheme
+selectors before any per-action prerequisite (and which ignore a target they
+cannot use), and the missing-prerequisite errors — and all of that is at parity
+too. Where the engine would then do the work, the action stops with a message of
+our own rather than an invented Apple one.
 
 ## Explicitly not ours
 
@@ -372,7 +400,9 @@ The small, self-contained neighbours worth considering as separate repos later:
    (`origin` → `LibreDarwin/IDETools.git`; the old name is kept as `old`).
 6. ⬜ Open: whether `openxc-tools/xcodebuild` retires in favour of this repo. Not
    decided, and deliberately not acted on.
-7. ❌ `xcindex-test` — recorded, not planned.
+7. ◐ `xcindex-test` — the console and the selection algebra are implemented and
+   at parity (`src/xcindex-test/`, `make parity`); the build actions are stubs
+   that need XCBuild, so the engine half remains open.
 8. ✅ Regression tests in `tests/run.sh`, run by `make test` and `bmake test`.
    70 assertions over the bugs above plus the unresolvable-`SDKROOT` case they
    turned up, each checked against the pbxproj, an SDK's own plist, a
@@ -389,6 +419,13 @@ The small, self-contained neighbours worth considering as separate repos later:
    the suite does not silently lose tests when run bare, but a run without
    `DEVELOPER_DIR` is short of a full one, and the skips are the only signal.
    Counts quoted elsewhere in this file are bare runs unless they say otherwise.
+
+   `xcindex-test` is checked differently, because a test that agrees with a bug
+   the two sides share proves nothing. `tests/xcindex-parity.sh` runs the
+   reimplementation and Apple's own binary on the same input and diffs them byte
+   for byte, with only the elapsed seconds normalised away — 142 cases over the
+   fixtures in `tests/fixtures/`, driven by `make parity`. It needs Xcode, so it
+   is deliberately not part of `make test`.
 
 #### Status verdict — 2026-09-28
 

@@ -87,6 +87,17 @@ LOADER_VERSION := -compatibility_version 1.0.0 -current_version 1.0.0
 
 XCODEBUILD := $(BUILD_DIR)/xcodebuild
 
+# xcindex-test is the third IDETools product: the driver that exercises the
+# build system APIs the index service talks to.  It shares the project model
+# with xcodebuild (project.c) and the same path helpers, but does not link
+# the loader and needs no Developer-directory discovery, so it carries only
+# the objects it actually reaches.
+XCINDEXTEST := $(BUILD_DIR)/xcindex-test
+
+XCINDEXTEST_OBJS := $(OBJDIR)/xcindex-test.o $(OBJDIR)/project.o \
+		    $(OBJDIR)/cfplist.o $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o \
+		    $(OBJDIR)/xcpath.o
+
 # The loader is the second IDETools product: a dylib that owns the entry point
 # so a tool can re-exec itself with DYLD_IMAGE_SUFFIX=_asan and have dyld bind
 # the _asan twins of its own dylibs.  It is C with a CoreFoundation surface, and
@@ -113,11 +124,15 @@ COMMON_OBJS     := $(OBJDIR)/cfplist.o $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o \
 
 XCODEBUILD_ALL_OBJS := $(XCODEBUILD_OBJS) $(COMMON_OBJS)
 
-all: $(XCODEBUILD) $(LOADER)
+all: $(XCODEBUILD) $(LOADER) $(XCINDEXTEST)
 
 $(XCODEBUILD): $(XCODEBUILD_ALL_OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(XCODEBUILD_ALL_OBJS) $(LFLAGS) $(XCODEBUILD_RPATH)
+
+$(XCINDEXTEST): $(XCINDEXTEST_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $(XCINDEXTEST_OBJS) $(LFLAGS)
 
 $(LOADER): $(LOADER_OBJS)
 	@mkdir -p $(BUILD_DIR)
@@ -152,6 +167,11 @@ $(OBJDIR)/ini.o: src/xcodebuild/ini.c src/xcodebuild/ini.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/ini.c
 
+$(OBJDIR)/xcindex-test.o: src/xcindex-test/xcindex-test.c src/xcindex-test/xcindex-help.h \
+                           src/xcodebuild/project.h src/common/xcpath.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ src/xcindex-test/xcindex-test.c
+
 $(OBJDIR)/xcpath.o: src/common/xcpath.c src/common/xcpath.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/common/xcpath.c
@@ -184,7 +204,13 @@ install: all
 test: all
 	@TOOL=$(XCODEBUILD) sh tests/run.sh
 
+# The parity tests are the opposite: they diff the reimplementation against
+# Apple's own xcindex-test, so they need Xcode, and they are not part of
+# `test`.  They are byte-for-byte, with only timings normalised away.
+parity: all
+	@MINE=$(XCINDEXTEST) sh tests/xcindex-parity.sh
+
 clean:
 	rm -rf build
 
-.PHONY: all install clean test
+.PHONY: all install clean test parity

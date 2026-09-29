@@ -85,6 +85,61 @@ int project_scheme_targets(const char *project, const char *scheme,
 
 int project_list(const char *project, const char *workspace, const xcodebuild_opts *opts);
 
+/* ------------------------------------------------------------------ */
+/* xcindex-test -- the model the third IDETools product exposes.       */
+/*                                                                    */
+/* These differ from xcodebuild -list on purpose: xcindex-test lists  */
+/* scheme files and target-derived names with no dedup between the    */
+/* two sets under a case-sensitive ASCII sort, and suppresses a        */
+/* target-derived name when any scheme file's BuildableProductRunnable */
+/* resolves to it from the same container -- the OPPOSITE rule from    */
+/* xcodebuild's, which consults xcschememanagement.plist's             */
+/* SuppressBuildableAutocreation instead.                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The xcindex_* entry points below all take the project as a path to an
+ * .xcodeproj bundle.  A NULL project stands for a path that is not one --
+ * the pbxproj file itself, or a plain directory -- and every one of them
+ * then reports an empty project: no targets, no schemes, nothing that
+ * resolves.  That is what xcindex-test does with such a path, and it still
+ * reports success.
+ */
+
+/* The scheme list xcindex-test prints: every scheme-file name (shared
+ * and user schemes) followed by every target-derived name that is not
+ * suppressed, concatenated with no dedup and sorted case-sensitively.
+ * Caller frees each string and the array. Returns the count. */
+int xcindex_scheme_list(const char *project, char ***names);
+
+/* Whether `-scheme <name>` resolves: a scheme file (shared, then any
+ * user's) wins; otherwise the name is a target-derived scheme and is
+ * usable only when that target exists and is not suppressed.  *from_file
+ * is set to 1 when a file carried it.  Returns 1 when it resolves. */
+int xcindex_scheme_resolve(const char *project, const char *scheme,
+    int *from_file);
+
+/* The targets a scheme selects: for a scheme file, every target one of
+ * its actions references -- a BuildActionEntry, a TestableReference or a
+ * BuildableProductRunnable, in a known action, are all read, so a scheme
+ * that both builds and launches a target names it once; for a
+ * target-derived scheme, that one target.  The caller sorts and dedups.
+ * Caller frees each string and the array. Returns the count. */
+int xcindex_scheme_targets(const char *project, const char *scheme,
+    char ***names);
+
+/* Every target of the project, in the order its targets array lists them;
+ * names and their object GUIDs.  xcindex-test prints targets in name
+ * order rather than this one, so callers sort.  Caller frees each string
+ * and the arrays. Returns the count. */
+int xcindex_target_list(const char *project, char ***names, char ***guids);
+
+/* The source files a target actually compiles, as absolute paths that
+ * exist on disk, in build-phase order.  Caller frees each and the array.
+ * Returns the count (0 when the target has no on-disk sources). */
+int xcindex_target_sources(const char *project, const char *target,
+    char ***paths);
+
 /* Print available SDKs and toolchains from the developer directory. */
 void project_show_sdks(const char *devpath);
 void project_show_toolchains(const char *devpath);

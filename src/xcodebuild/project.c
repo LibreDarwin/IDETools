@@ -46,6 +46,7 @@
 #include "xcodebuild.h"
 #include "project.h"
 #include "sdkpath.h"
+#include "xcpath.h"
 
 static const char *pbxproj_name = "project.pbxproj";
 
@@ -1383,6 +1384,924 @@ int project_list(const char *project, const char *workspace, const xcodebuild_op
 
 	CFRelease(root);
 	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* xcindex-test -- the model the third IDETools product exposes.       */
+/*                                                                    */
+/* xcindex-test and xcodebuild disagree about a project's schemes on  */
+/* purpose.  xcodebuild asks xcschememanagement.plist which targets   */
+/* must not get an on-demand scheme; xcindex-test instead suppresses  */
+/* a target-derived name when some scheme FILE carries a              */
+/* BuildableProductRunnable for that target, provided the reference's */
+/* ReferencedContainer matches the project's own.  The two also sort  */
+/* differently: xcodebuild folds case, xcindex-test uses byte order.  */
+/* ------------------------------------------------------------------ */
+
+/* Sort under strcmp, unlike the case-folding xcodebuild uses. */
+static int
+xcindex_name_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * Apple decodes a scheme into its typed actions and only reads the target
+ * references those actions contain, so a BuildableReference counts when it
+ * sits in a runnable wrapper -- BuildableProductRunnable for a launch or
+ * profile action, BuildActionEntry for a build action, TestableReference for
+ * a test action -- and that wrapper sits somewhere inside a known action.  A
+ * reference under any other element is not part of the model and is ignored,
+ * which is why a scan for every BuildableReference in the file finds more
+ * targets than Apple does.
+ */
+static int
+scheme_is_action(const char *name, size_t len)
+{
+	static const char *const actions[] = {
+		"BuildAction", "LaunchAction", "TestAction", "ProfileAction",
+		"AnalyzeAction", "ArchiveAction", "AnalyzeAndArchiveAction",
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(actions) / sizeof(actions[0]); i++) {
+		if (strlen(actions[i]) == len &&
+		    strncmp(actions[i], name, len) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int
+scheme_is_runnable(const char *name, size_t len)
+{
+	static const char *const runnables[] = {
+		"BuildableProductRunnable", "BuildActionEntry",
+		"TestableReference", "MacroReference",
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(runnables) / sizeof(runnables[0]); i++) {
+		if (strlen(runnables[i]) == len &&
+		    strncmp(runnables[i], name, len) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* Is the element the one that makes a target runnable by the scheme?  A
+ * build entry or a test entry says the scheme builds or tests the target,
+ * which is not the same as saying the scheme can run it. */
+static int
+scheme_is_launchable(const char *name, size_t len)
+{
+	return len == strlen("BuildableProductRunnable") &&
+	    strncmp(name, "BuildableProductRunnable", len) == 0;
+}
+
+/*
+ * The next BuildableReference Apple would read, as a span over the
+ * reference's own tag.  The document is walked tag by tag keeping a stack
+ * of the open elements, so the reference's parent and the action enclosing
+ * it are both known when it is found.
+ *
+ * The walk always starts at the top of the document and skips past whatever
+ * the caller has already consumed.  Resuming mid-file instead would lose
+ * the open elements a reference sits inside -- a second BuildActionEntry
+ * after the first would no longer know it was inside a BuildAction -- so
+ * every reference but the first would be judged to be outside the model.
+ */
+static int
+scheme_runnable_next(const char *text, const char **from, int launchable_only,
+    const char **ref_start, const char **ref_end)
+{
+	struct {
+		const char *name;
+		size_t len;
+	} stack[64];
+	int depth = 0;
+	const char *p = text;
+
+	while ((p = strchr(p, '<')) != NULL) {
+		const char *tag = p + 1, *e, *gt;
+		size_t len;
+		int empty;
+
+		/* A comment, a declaration or a doctype carries no elements. */
+		if (*tag == '?' || *tag == '!') {
+			if ((p = strchr(tag, '>')) == NULL)
+				return 0;
+			p++;
+			continue;
+		}
+
+		/* A closing tag pops the element it names. */
+		if (*tag == '/') {
+			if (depth > 0)
+				depth--;
+			if ((p = strchr(tag, '>')) == NULL)
+				return 0;
+			p++;
+			continue;
+		}
+
+		for (e = tag; *e != '\0' && *e != ' ' && *e != '\t' &&
+		    *e != '\n' && *e != '\r' && *e != '>' && *e != '/'; e++)
+			;
+		len = (size_t)(e - tag);
+
+		if ((gt = strchr(tag, '>')) == NULL)
+			return 0;
+		empty = (gt > tag && gt[-1] == '/');
+
+		if (len == strlen("BuildableReference") &&
+		    strncmp(tag, "BuildableReference", len) == 0) {
+			int in_action = 0;
+			int accepted;
+			int i;
+
+			for (i = 0; i < depth; i++) {
+				if (scheme_is_action(stack[i].name,
+				    stack[i].len))
+					in_action = 1;
+			}
+
+			accepted = depth > 0 && in_action &&
+			    (launchable_only
+			    ? scheme_is_launchable(stack[depth - 1].name,
+			        stack[depth - 1].len)
+			    : scheme_is_runnable(stack[depth - 1].name,
+			        stack[depth - 1].len));
+
+			if (p >= *from && accepted) {
+				*ref_start = p;
+				*ref_end = gt;
+				*from = gt + 1;
+				return 1;
+			}
+		}
+
+		if (!empty && depth < (int)(sizeof(stack) / sizeof(stack[0]))) {
+			stack[depth].name = tag;
+			stack[depth].len = len;
+			depth++;
+		}
+		p = gt + 1;
+	}
+
+	return 0;
+}
+
+/*
+ * Whether a scheme file suppresses the target-derived scheme of the
+ * target named by (guid, name): some runnable in it launches that target
+ * from the project's own container.  Only a launch counts.  A scheme that
+ * merely builds or tests a target leaves the target's own scheme in the
+ * list, so a project whose scheme file has a BuildActionEntry naming a
+ * target still offers that target's generated scheme alongside the file's.
+ */
+static int
+xcindex_scheme_suppresses_target(const char *text, const char *guid,
+    const char *name, const char *container)
+{
+	const char *from = text, *rs, *re;
+	char gbuf[512], nbuf[512], bbuf[512], cbuf[512];
+	const char *g, *n, *b, *c;
+	int matched = 0;
+
+	while (scheme_runnable_next(text, &from, 1, &rs, &re)) {
+		g = xml_attr(rs, re, "BlueprintIdentifier", gbuf, sizeof(gbuf));
+		n = xml_attr(rs, re, "BlueprintName", nbuf, sizeof(nbuf));
+		b = xml_attr(rs, re, "BuildableName", bbuf, sizeof(bbuf));
+		c = xml_attr(rs, re, "ReferencedContainer", cbuf, sizeof(cbuf));
+
+		/*
+		 * The reference resolves to the target when any of its
+		 * identifiers does, and it is from this project when the
+		 * container agrees.  Both together, or the scheme is not
+		 * this target's.
+		 */
+		if (c != NULL && strcmp(c, container) == 0 &&
+		    ((g != NULL && strcmp(g, guid) == 0) ||
+		     (n != NULL && strcmp(n, name) == 0) ||
+		     (b != NULL && strcmp(b, name) == 0))) {
+			matched = 1;
+			break;
+		}
+	}
+
+	return matched;
+}
+
+/*
+ * Every scheme file of the project, shared and each user's, without
+ * regard to which "wins" for a name -- a variant of collect_suppressed
+ * but for the file's text rather than xcschememanagement.plist.
+ */
+static void
+xcindex_collect_suppressing_text(const char *project, const char *guid,
+    const char *name, const char *container, int *suppressed)
+{
+	char base[PATH_MAX], dir[PATH_MAX];
+	DIR *d;
+	struct dirent *e;
+
+	if (*suppressed)
+		return;
+
+	snprintf(base, sizeof(base), "%s", project);
+	snprintf(dir, sizeof(dir), "%s/xcshareddata/xcschemes", base);
+
+	if ((d = opendir(dir)) != NULL) {
+		while ((e = readdir(d)) != NULL) {
+			char path[PATH_MAX], *text;
+			size_t len;
+
+			if (!endswith(e->d_name, ".xcscheme"))
+				continue;
+
+			snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+			if ((text = file_read_all(path, &len)) != NULL) {
+				if (xcindex_scheme_suppresses_target(text,
+				    guid, name, container))
+					*suppressed = 1;
+				free(text);
+			}
+		}
+		closedir(d);
+	}
+
+	snprintf(dir, sizeof(dir), "%s/xcuserdata", base);
+	if ((d = opendir(dir)) != NULL) {
+		while ((e = readdir(d)) != NULL) {
+			char udir[PATH_MAX], path[PATH_MAX];
+			char *text;
+			size_t len;
+			DIR *rd;
+			struct dirent *r;
+
+			if (e->d_name[0] == '.')
+				continue;
+
+			snprintf(udir, sizeof(udir), "%s/%s/xcschemes", dir,
+			    e->d_name);
+			if ((rd = opendir(udir)) == NULL)
+				continue;
+
+			while ((r = readdir(rd)) != NULL) {
+				if (!endswith(r->d_name, ".xcscheme"))
+					continue;
+
+				snprintf(path, sizeof(path), "%s/%s", udir,
+				    r->d_name);
+				if ((text = file_read_all(path, &len)) != NULL) {
+					if (xcindex_scheme_suppresses_target(
+					    text, guid, name, container))
+						*suppressed = 1;
+					free(text);
+				}
+				if (*suppressed)
+					break;
+			}
+			closedir(rd);
+			if (*suppressed)
+				break;
+		}
+		closedir(d);
+	}
+}
+
+/*
+ * The container name a project is referred to by in its own schemes.
+ * The fixture writes "container:Sources.xcodeproj"; the project is the
+ * bundle, so the directory name of the path (with a .pbxproj path cut
+ * down to its bundle) is the comparison.
+ */
+static void
+xcindex_container(const char *project, char *buf, size_t len)
+{
+	char dir[PATH_MAX];
+	const char *slash;
+
+	if (endswith(project, ".pbxproj")) {
+		if (xc_dirname(project, dir, sizeof(dir)) != NULL)
+			project = dir;
+	}
+
+	if ((slash = strrchr(project, '/')) != NULL)
+		project = slash + 1;
+
+	snprintf(buf, len, "container:%s", project);
+}
+
+/*
+ * A scheme name resolves when a file of that name exists (shared, then
+ * any user's), or when it is a target-derived scheme: the target of
+ * that name exists and no scheme file's runnable suppresses it.
+ */
+int
+xcindex_scheme_resolve(const char *project, const char *scheme,
+    int *from_file)
+{
+	char path[PATH_MAX];
+
+	if (from_file != NULL)
+		*from_file = 0;
+	if (project == NULL)
+		return 0;
+
+	if (project == NULL || scheme == NULL)
+		return 0;
+
+	if (scheme_file(project, scheme, path, sizeof(path))) {
+		if (from_file != NULL)
+			*from_file = 1;
+		return 1;
+	}
+
+	{
+		CFTypeRef root = project_load_pbxproj(project);
+		int found = 0;
+
+		if (root != NULL) {
+			char guid[512];
+			CFTypeRef root_id = NULL, objects, project_obj, tarr;
+			int suppressed = 0;
+
+			objects = get_objects_dict(root, &root_id);
+			project_obj = pderef(objects, root_id);
+			tarr = pget(project_obj, "targets");
+
+			for (CFIndex i = 0; i < pcount(tarr); i++) {
+				CFTypeRef tid = pat(tarr, i);
+				CFTypeRef tobj = pderef(objects, tid);
+				char nb[512];
+				const char *tn, *id;
+
+				if (tobj == NULL)
+					continue;
+				tn = pstr(pget(tobj, "name"), nb, sizeof(nb));
+				id = pstr(tid, guid, sizeof(guid));
+				if (tn == NULL || strcmp(tn, scheme) != 0)
+					continue;
+
+				{
+					char container[PATH_MAX];
+
+					xcindex_container(project, container,
+					    sizeof(container));
+					xcindex_collect_suppressing_text(project,
+					    id, tn, container, &suppressed);
+				}
+
+				if (!suppressed)
+					found = 1;
+				break;
+			}
+
+			CFRelease(root);
+		}
+
+		return found;
+	}
+}
+
+/*
+ * The targets a scheme selects, named by the scheme's runnable.
+ *
+ * A scheme file's runnable names one buildable -- usually the product
+ * the scheme runs.  That reference is looked up in the loaded project:
+ * its BlueprintIdentifier is the target's object id, so the target it
+ * stands for is resolved by name.  A target-derived scheme selects the
+ * one target it is named after.
+ */
+int
+xcindex_scheme_targets(const char *project, const char *scheme,
+    char ***names)
+{
+	char path[PATH_MAX];
+	char **targets = NULL;
+	int n = 0;
+
+	if (project == NULL) {
+		*names = NULL;
+		return 0;
+	}
+
+	*names = NULL;
+	if (project == NULL || scheme == NULL)
+		return 0;
+
+	if (!scheme_file(project, scheme, path, sizeof(path))) {
+		/* Target-derived: the target is the name. */
+		targets = malloc(sizeof(*targets));
+		if (targets == NULL)
+			return 0;
+		targets[0] = strdup(scheme);
+		if (targets[0] == NULL) {
+			free(targets);
+			return 0;
+		}
+		*names = targets;
+		return 1;
+	}
+
+	{
+		CFTypeRef root = project_load_pbxproj(project);
+		char *text;
+		size_t len;
+		const char *from, *rs, *re;
+
+		if ((text = file_read_all(path, &len)) == NULL) {
+			if (root != NULL)
+				CFRelease(root);
+			return 0;
+		}
+
+		from = text;
+		while (scheme_runnable_next(text, &from, 0, &rs, &re)) {
+			char gbuf[512], nbuf[512], bbuf[512];
+			char nb[512];
+			const char *g, *bname, *b;
+			CFTypeRef root_id = NULL, objects, project_obj, tarr;
+
+			g = xml_attr(rs, re, "BlueprintIdentifier", gbuf,
+			    sizeof(gbuf));
+			bname = xml_attr(rs, re, "BlueprintName", nbuf,
+			    sizeof(nbuf));
+			b = xml_attr(rs, re, "BuildableName", bbuf, sizeof(bbuf));
+
+			if (root != NULL) {
+				objects = get_objects_dict(root, &root_id);
+				if (objects == NULL || root_id == NULL)
+					break;
+				project_obj = pderef(objects, root_id);
+				tarr = pget(project_obj, "targets");
+
+				for (CFIndex i = 0; i < pcount(tarr); i++) {
+					CFTypeRef tid = pat(tarr, i);
+					CFTypeRef tobj = pderef(objects, tid);
+					const char *tn, *id;
+					char guid[512];
+
+					if (tobj == NULL)
+						continue;
+					tn = pstr(pget(tobj, "name"), nb,
+					    sizeof(nb));
+					id = pstr(tid, guid, sizeof(guid));
+					if (tn == NULL)
+						continue;
+
+					if ((g != NULL && id != NULL &&
+					     strcmp(g, id) == 0) ||
+					    (bname != NULL && strcmp(bname, tn) == 0) ||
+					    (b != NULL && strcmp(b, tn) == 0)) {
+						char **grown =
+						    realloc(targets,
+						    (size_t)(n + 1) *
+						    sizeof(*targets));
+
+						if (grown != NULL) {
+							targets = grown;
+							targets[n++] = strdup(tn);
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		free(text);
+		if (root != NULL)
+			CFRelease(root);
+
+		*names = targets;
+		return n;
+	}
+}
+
+/*
+ * Every target of the project, in file order, with the object id each
+ * is keyed by.  xcindex-test composes an index id from the two: the
+ * directory of the project and the target's name and id.
+ */
+int
+xcindex_target_list(const char *project, char ***names, char ***guids)
+{
+	CFTypeRef root = project_load_pbxproj(project);
+	char **nlist = NULL, **glist = NULL;
+	int n = 0;
+
+	if (project == NULL) {
+		if (guids != NULL)
+			*guids = NULL;
+		*names = NULL;
+		return 0;
+	}
+	*names = NULL;
+	if (guids != NULL)
+		*guids = NULL;
+
+	if (root == NULL)
+		return 0;
+
+	{
+		CFTypeRef root_id = NULL, objects, project_obj, tarr;
+
+		objects = get_objects_dict(root, &root_id);
+		project_obj = pderef(objects, root_id);
+		tarr = pget(project_obj, "targets");
+
+		for (CFIndex i = 0; i < pcount(tarr); i++) {
+			CFTypeRef tid = pat(tarr, i);
+			CFTypeRef tobj = pderef(objects, tid);
+			char nb[512], gb[512];
+			const char *tn, *id;
+			char **grown;
+
+			if (tobj == NULL)
+				continue;
+			tn = pstr(pget(tobj, "name"), nb, sizeof(nb));
+			id = pstr(tid, gb, sizeof(gb));
+			if (tn == NULL || id == NULL)
+				continue;
+
+			grown = realloc(nlist, (size_t)(n + 1) * sizeof(*nlist));
+			if (grown != NULL) {
+				nlist = grown;
+				nlist[n] = strdup(tn);
+			}
+			grown = realloc(glist, (size_t)(n + 1) * sizeof(*glist));
+			if (grown != NULL) {
+				glist = grown;
+				glist[n] = strdup(id);
+			}
+			n++;
+		}
+	}
+
+	CFRelease(root);
+
+	*names = nlist;
+	if (guids != NULL)
+		*guids = glist;
+
+	return n;
+}
+
+/*
+ * The scheme list xcindex-test prints.
+ *
+ * First every scheme file of the project, shared and each user's; then
+ * every target-derived scheme (the project's targets) that no scheme
+ * file suppresses; and the two are combined without deduplication and
+ * sorted under byte order.
+ */
+int
+xcindex_scheme_list(const char *project, char ***names)
+{
+	strvec list = {0};
+
+	if (project == NULL) {
+		*names = NULL;
+		return 0;
+	}
+	char base[PATH_MAX], sdir[PATH_MAX];
+	DIR *d;
+	CFTypeRef root;
+	struct dirent *e;
+
+	*names = NULL;
+	if (project == NULL)
+		return 0;
+
+	snprintf(base, sizeof(base), "%s", project);
+
+	/* Scheme files: shared, then every user's. */
+	snprintf(sdir, sizeof(sdir), "%s/xcshareddata/xcschemes", base);
+	if ((d = opendir(sdir)) != NULL) {
+		while ((e = readdir(d)) != NULL) {
+			char namebuf[256];
+			char *dot;
+
+			if (!endswith(e->d_name, ".xcscheme"))
+				continue;
+			snprintf(namebuf, sizeof(namebuf), "%s", e->d_name);
+			if ((dot = strstr(namebuf, ".xcscheme")) != NULL)
+				*dot = '\0';
+			strvec_push(&list, namebuf);
+		}
+		closedir(d);
+	}
+
+	snprintf(sdir, sizeof(sdir), "%s/xcuserdata", base);
+	if ((d = opendir(sdir)) != NULL) {
+		while ((e = readdir(d)) != NULL) {
+			char udir[PATH_MAX];
+			DIR *rd;
+			struct dirent *r;
+
+			if (e->d_name[0] == '.')
+				continue;
+
+			snprintf(udir, sizeof(udir), "%s/%s/xcschemes", sdir,
+			    e->d_name);
+			if ((rd = opendir(udir)) == NULL)
+				continue;
+
+			while ((r = readdir(rd)) != NULL) {
+				char namebuf[256];
+				char *dot;
+
+				if (!endswith(r->d_name, ".xcscheme"))
+					continue;
+				snprintf(namebuf, sizeof(namebuf), "%s",
+				    r->d_name);
+				if ((dot = strstr(namebuf, ".xcscheme")) != NULL)
+					*dot = '\0';
+				strvec_push(&list, namebuf);
+			}
+			closedir(rd);
+		}
+		closedir(d);
+	}
+
+	/* Target-derived schemes do not duplicate a file's name. */
+	root = project_load_pbxproj(base);
+	if (root != NULL) {
+		CFTypeRef root_id = NULL, objects, project_obj, tarr;
+
+		objects = get_objects_dict(root, &root_id);
+		project_obj = pderef(objects, root_id);
+		tarr = pget(project_obj, "targets");
+
+		for (CFIndex i = 0; i < pcount(tarr); i++) {
+			CFTypeRef tid = pat(tarr, i);
+			CFTypeRef tobj = pderef(objects, tid);
+			char nb[512], gb[512], container[PATH_MAX];
+			const char *tn, *id;
+			int suppressed_flag = 0;
+
+			if (tobj == NULL)
+				continue;
+			tn = pstr(pget(tobj, "name"), nb, sizeof(nb));
+			id = pstr(tid, gb, sizeof(gb));
+			if (tn == NULL || id == NULL)
+				continue;
+
+			xcindex_container(base, container, sizeof(container));
+			xcindex_collect_suppressing_text(base, id, tn,
+			    container, &suppressed_flag);
+			if (suppressed_flag)
+				continue;
+
+			strvec_push(&list, tn);
+		}
+
+		CFRelease(root);
+	}
+
+	qsort(list.items, list.count, sizeof(*list.items), xcindex_name_cmp);
+
+	*names = list.items;
+	return (int)list.count;
+}
+
+/*
+ * The source files a target actually compiles, as absolute paths that
+ * exist on disk, in build-phase order.  The group tree is walked the
+ * same way the build walks it -- a group with a path accumulates it,
+ * sourceTree names what the result is measured against, and the walk
+ * starts at the directory holding the project bundle -- then each
+ * source phase's build file is resolved against what the walk found.
+ */
+
+/* Where every file reference of the project lives, keyed by its id. */
+struct xpmap {
+	char **ids;
+	char **paths;
+	int count;
+	int capacity;
+};
+
+static void
+xpmap_add(struct xpmap *m, const char *id, const char *path)
+{
+	char **ids, **paths;
+	int cap;
+
+	if (id == NULL)
+		return;
+	if (m->count == m->capacity) {
+		cap = m->capacity ? m->capacity * 2 : 16;
+		ids = realloc(m->ids, (size_t)cap * sizeof(*ids));
+		paths = realloc(m->paths, (size_t)cap * sizeof(*paths));
+		if (ids == NULL || paths == NULL)
+			return;
+		m->ids = ids;
+		m->paths = paths;
+		m->capacity = cap;
+	}
+	m->ids[m->count] = strdup(id);
+	m->paths[m->count] = strdup(path);
+	m->count++;
+}
+
+static const char *
+xpmap_get(struct xpmap *m, const char *id)
+{
+	int i;
+
+	if (id == NULL)
+		return NULL;
+	for (i = 0; i < m->count; i++)
+		if (strcmp(m->ids[i], id) == 0)
+			return m->paths[i];
+	return NULL;
+}
+
+static void
+xpmap_free(struct xpmap *m)
+{
+	int i;
+
+	for (i = 0; i < m->count; i++) {
+		free(m->ids[i]);
+		free(m->paths[i]);
+	}
+	free(m->ids);
+	free(m->paths);
+	m->ids = NULL;
+	m->paths = NULL;
+	m->count = m->capacity = 0;
+}
+
+/*
+ * What a file's path is measured against, for sourceTree values that
+ * own their own root.  SOURCE_ROOT and the enclosing group both just
+ * accumulate; the other roots ignore what has been walked so far.
+ */
+static void
+xwalk_group(CFTypeRef objects, CFTypeRef group, const char *prefix,
+    const char *source_root, struct xpmap *map)
+{
+	CFTypeRef children = pget(group, "children");
+
+	for (CFIndex i = 0; i < pcount(children); i++) {
+		CFTypeRef child_id = pat(children, i);
+		CFTypeRef child = pderef(objects, child_id);
+		char idbuf[512], pathbuf[512], treebuf[64], isabuf[64];
+		const char *id, *path, *tree, *isa;
+		char full[PATH_MAX];
+
+		if (child == NULL)
+			continue;
+		id = pstr(child_id, idbuf, sizeof(idbuf));
+		isa = pstr(pget(child, "isa"), isabuf, sizeof(isabuf));
+		path = pstr(pget(child, "path"), pathbuf, sizeof(pathbuf));
+		tree = pstr(pget(child, "sourceTree"), treebuf, sizeof(treebuf));
+
+		if (path == NULL) {
+			if (isa != NULL && strstr(isa, "Group") != NULL)
+				xwalk_group(objects, child, prefix,
+				    source_root, map);
+			continue;
+		}
+
+		if (path[0] == '/')
+			snprintf(full, sizeof(full), "%s", path);
+		else if (tree != NULL && strcmp(tree, "SOURCE_ROOT") == 0)
+			snprintf(full, sizeof(full), "%s/%s", source_root,
+			    path);
+		else if (tree != NULL &&
+		    (strcmp(tree, "BUILT_PRODUCTS_DIR") == 0 ||
+		     strcmp(tree, "SDKROOT") == 0 ||
+		     strcmp(tree, "DEVELOPER_DIR") == 0))
+			snprintf(full, sizeof(full), "%s", path);
+		else
+			snprintf(full, sizeof(full), "%s/%s", prefix, path);
+
+		if (isa != NULL && strstr(isa, "Group") != NULL)
+			xwalk_group(objects, child, full, source_root, map);
+		else if (id != NULL)
+			xpmap_add(map, id, full);
+	}
+}
+
+int
+xcindex_target_sources(const char *project, const char *target,
+    char ***paths)
+{
+	struct xpmap map = {0};
+
+	if (project == NULL) {
+		*paths = NULL;
+		return 0;
+	}
+	CFTypeRef root, root_id = NULL, objects, project_obj, tarr, tobj = NULL;
+	char **list = NULL;
+	int n = 0;
+	char base[PATH_MAX];
+
+	*paths = NULL;
+	if (project == NULL || target == NULL)
+		return 0;
+
+	snprintf(base, sizeof(base), "%s", project);
+	root = project_load_pbxproj(base);
+	if (root == NULL)
+		return 0;
+
+	objects = get_objects_dict(root, &root_id);
+	if (objects == NULL || root_id == NULL) {
+		CFRelease(root);
+		return 0;
+	}
+	project_obj = pderef(objects, root_id);
+	tarr = pget(project_obj, "targets");
+
+	for (CFIndex i = 0; i < pcount(tarr); i++) {
+		CFTypeRef tid = pat(tarr, i);
+		CFTypeRef t = pderef(objects, tid);
+		char nb[512];
+		const char *tn;
+
+		if (t == NULL)
+			continue;
+		tn = pstr(pget(t, "name"), nb, sizeof(nb));
+		if (tn != NULL && strcmp(tn, target) == 0) {
+			tobj = t;
+			break;
+		}
+	}
+
+	if (tobj != NULL) {
+		char source_root[PATH_MAX];
+		CFTypeRef main_group;
+
+		/* Paths are measured from the directory holding the
+		 * project bundle, exactly as the build measures them. */
+		if (xc_dirname(base, source_root, sizeof(source_root)) != NULL) {
+			main_group = pderef(objects, pget(project_obj,
+			    "mainGroup"));
+			xwalk_group(objects, main_group, source_root,
+			    source_root, &map);
+
+			{
+				CFTypeRef phases = pget(tobj, "buildPhases");
+				CFIndex p;
+
+				for (p = 0; p < pcount(phases); p++) {
+					CFTypeRef phase = pderef(objects,
+					    pat(phases, p));
+					char isabuf[64];
+					const char *isa;
+					CFTypeRef files;
+
+					if (phase == NULL)
+						continue;
+					isa = pstr(pget(phase, "isa"), isabuf,
+					    sizeof(isabuf));
+					if (isa == NULL ||
+					    strcmp(isa, "PBXSourcesBuildPhase") != 0)
+						continue;
+
+					files = pget(phase, "files");
+					for (CFIndex f = 0; f < pcount(files);
+					    f++) {
+						CFTypeRef bf = pderef(objects,
+						    pat(files, f));
+						char refbuf[512];
+						const char *ref, *src;
+						char **grown;
+
+						if (bf == NULL)
+							continue;
+						ref = pstr(pget(bf, "fileRef"),
+						    refbuf, sizeof(refbuf));
+						src = xpmap_get(&map, ref);
+						if (src == NULL ||
+						    access(src, R_OK) != 0)
+							continue;
+
+						grown = realloc(list,
+						    (size_t)(n + 1) *
+						    sizeof(*list));
+						if (grown != NULL) {
+							list = grown;
+							list[n++] = strdup(src);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	xpmap_free(&map);
+	CFRelease(root);
+
+	*paths = list;
+	return n;
 }
 
 /* ------------------------------------------------------------------ */
