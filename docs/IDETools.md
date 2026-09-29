@@ -30,7 +30,7 @@ done
 | --- | --- | --- | --- |
 | 1 | `Developer/usr/bin/xcodebuild` | 100,528 | **built** (`build/$(CONFIG)/xcodebuild`) — and it builds its own project |
 | 2 | `Contents/Frameworks/libxcodebuildLoader.dylib` | 73,440 | **built** (`build/$(CONFIG)/libxcodebuildLoader.dylib`) |
-| 3 | `Developer/usr/bin/xcindex-test` | 383,584 | out of reach (see below) |
+| 3 | `Developer/usr/bin/xcindex-test` | 383,584 | **command line built** (`build/$(CONFIG)/xcindex-test`) — the index it drives is out of reach (see below) |
 
 ### 1. `xcodebuild` — the tool
 
@@ -400,9 +400,10 @@ The small, self-contained neighbours worth considering as separate repos later:
    (`origin` → `LibreDarwin/IDETools.git`; the old name is kept as `old`).
 6. ⬜ Open: whether `openxc-tools/xcodebuild` retires in favour of this repo. Not
    decided, and deliberately not acted on.
-7. ◐ `xcindex-test` — the console and the selection algebra are implemented and
-   at parity (`src/xcindex-test/`, `make parity`); the build actions are stubs
-   that need XCBuild, so the engine half remains open.
+7. ◐ `xcindex-test` — the console, its argument parsing and the selection algebra
+   are implemented and at parity over 142 cases (`src/xcindex-test/`,
+   `make parity`); the build actions stop at the point where XCBuild would begin,
+   so the engine half and the index behind it remain open.
 8. ✅ Regression tests in `tests/run.sh`, run by `make test` and `bmake test`.
    70 assertions over the bugs above plus the unresolvable-`SDKROOT` case they
    turned up, each checked against the pbxproj, an SDK's own plist, a
@@ -427,24 +428,35 @@ The small, self-contained neighbours worth considering as separate repos later:
    fixtures in `tests/fixtures/`, driven by `make parity`. It needs Xcode, so it
    is deliberately not part of `make test`.
 
-#### Status verdict — 2026-09-28
+#### Status verdict — 2026-09-28, product 3 re-assessed at `14d702d`
 
 Re-assessed at `ba8ef6c` (this repo) and `82a443f` (tree), with the duplication
-audit re-measured rather than carried forward:
+audit re-measured rather than carried forward. The product-3 row was revisited
+separately at `14d702d`, once the console it describes had been built; the other
+rows are as measured on the 28th and are not re-measured here:
 
 | Scope | Verdict |
 | --- | --- |
 | Reachable products (1 and 2) | **complete** — built, verified, and self-building |
-| Product 3, `xcindex-test` | **out of scope**, not unfinished — links IDE frameworks with no path to them |
+| Product 3, `xcindex-test` | **half built** — the console, its option parsing and the target-selection algebra are reimplemented and diffed against Apple's own binary at 142 cases (`make parity`); what links IDE frameworks is the *index* the console would drive, and that is still out of reach. The engine-backed actions stop where XCBuild would begin |
 | Behavioural parity with Apple | **not met, now measured** — with a `-sdk` that resolves, every platform agrees on every value except one: Apple also emits `SDKROOT` in its name form after the path form, and the name wins. All nine platforms measured (`macosx`, both iOS-family and both watch/vision-family pairs) hit that single key; without `-sdk`, the 6 that differ are Apple's fallback for a missing SDK; the bugs the measurement exposed are fixed |
 | Retirement of `openxc-tools/xcodebuild` | **open decision** — needs a go-ahead, not more work |
 | `../xcselect` | **untouched**, awaiting the go-ahead |
 
 So: no, the project is not finished in the sense of "all three products built",
 and it is not unfinished in the sense of "work remaining on what we can reach".
-Both reachable products are done. What remains is real work, not bookkeeping:
-close the parity deltas above, then a scope decision (`xcindex-test`,
-retirement) and two go-aheads (`xcselect`, retirement).
+Both reachable products are done, and the reachable half of the third is done
+too. What remains is real work, not bookkeeping: close the `-showBuildSettings`
+deltas above, and then a scope decision (the `xcindex-test` index, retirement)
+and two go-aheads (`xcselect`, retirement).
+
+The `xcindex-test` row is the one this verdict has moved on since. When it was
+written, product 3 was filed as out of scope in one line, on the reasoning that
+it links IDE frameworks. That reasoning holds for the index and not for the
+command line, which never touches those frameworks — so the console, its
+argument parsing and the target-selection algebra are now reimplemented and
+measured against Apple's own binary. The distinction the earlier sections draw
+is the one to keep: the *front end* is reachable, the *service behind it* is not.
 
 The distinction that matters when reading the earlier sections: the tree gap
 list shrank from four faults to zero, but it did not shrink because the tool
