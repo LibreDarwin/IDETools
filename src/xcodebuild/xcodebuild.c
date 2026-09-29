@@ -2237,6 +2237,58 @@ loader_preflight(int argc, char **argv, int verbose)
 /* Main dispatch                                                       */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Apple opens the console output by echoing the invocation it was handed, so
+ * the first two lines of every build, -list or -showBuildSettings are the
+ * command that produced the rest.  An argument is quoted when it is not made
+ * only of characters a shell passes through unquoted -- alphanumerics and
+ * -_./=,+, measured one character at a time against the real tool -- and a
+ * backslash or a double quote inside it gains a backslash of its own.  An
+ * empty argument is not quoted: it contributes nothing but the separator that
+ * precedes it, which is why a trailing "" leaves a trailing space.
+ *
+ * The echo is skipped for -quiet and -json, and -json implies -quiet, so the
+ * JSON is not interleaved with anything meant for a person to read.
+ */
+static int arg_needs_quoting(const char *s)
+{
+	for (const char *p = s; *p != '\0'; p++) {
+		if (isalnum((unsigned char)*p))
+			continue;
+		if (strchr("-_./=,+", *p) != NULL)
+			continue;
+		return 1;
+	}
+	return 0;
+}
+
+static void print_invocation_arg(const char *s)
+{
+	if (!arg_needs_quoting(s)) {
+		fputs(s, stdout);
+		return;
+	}
+	putchar('"');
+	for (const char *p = s; *p != '\0'; p++) {
+		if (*p == '"' || *p == '\\')
+			putchar('\\');
+		putchar(*p);
+	}
+	putchar('"');
+}
+
+static void print_invocation(int argc, char **argv)
+{
+	fputs("Command line invocation:\n    ", stdout);
+	for (int i = 0; i < argc; i++) {
+		if (i > 0)
+			putchar(' ');
+		print_invocation_arg(argv[i]);
+	}
+	putchar('\n');
+	putchar('\n');
+}
+
 int main(int argc, char **argv)
 {
 	xcodebuild_opts *opts = parse_args(argc, argv);
@@ -2265,6 +2317,15 @@ int main(int argc, char **argv)
 		xbuild_opts_free(opts);
 		return 0;
 	}
+
+	/*
+	 * Everything below this line is a project-scoped action, and Apple
+	 * echoes the invocation for all of them.  The ones above it --
+	 * -help, -version, -showsdks -- do not, and neither does an option
+	 * that failed to parse, since parse_args has already returned by now.
+	 */
+	if (!opts->quiet && !opts->json)
+		print_invocation(argc, argv);
 
 	if (opts->list_targets) {
 		char *project = detect_project(opts, opts->project_dir);
