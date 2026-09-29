@@ -1919,34 +1919,66 @@ static void json_escape(FILE *fp, const char *s)
 	fputc('"', fp);
 }
 
+/*
+ * A separator is written ahead of every object but the first, so it lands
+ * between the previous object's closing brace and this one's opening brace.
+ * Writing it behind each object instead would put a comma after the last one
+ * too, and the document would not parse.
+ */
+static void json_emit_objects(settings_table *t, int pretty, int *first)
+{
+	for (size_t i = 0; i < t->count; i++) {
+		if (!*first)
+			fputs(",", stdout);
+		*first = 0;
+		fputs(pretty ? "\n\t{\n" : "\n  {\n", stdout);
+		fputs(pretty ? "\t\t\"name\": " : "    \"name\": ", stdout);
+		json_escape(stdout, t->entries[i].key);
+		fputs(", ", stdout);
+		fputs(pretty ? "\n\t\t\"value\": " : "    \"value\": ", stdout);
+		{
+			char *v = settings_expand(t, t->entries[i].value);
+
+			json_escape(stdout, (v != NULL) ? v : t->entries[i].value);
+			free(v);
+		}
+		fputs(pretty ? "\n\t}" : "  }", stdout);
+	}
+}
+
+/*
+ * Every target's settings as one array.
+ *
+ * settings_emit opens and closes its own brackets, so calling it per target
+ * would emit one array per target and leave the document unparseable as soon
+ * as there was more than one.  This shares the object formatting and keeps a
+ * single pair of brackets across the whole set.
+ */
+int settings_emit_json_all(settings_table **tables, size_t n, int pretty)
+{
+	const char *nl = pretty ? "\n" : "";
+	int first = 1;
+
+	fprintf(stdout, "[%s", nl);
+	for (size_t i = 0; i < n; i++) {
+		if (tables[i] != NULL)
+			json_emit_objects(tables[i], pretty, &first);
+	}
+	fprintf(stdout, "%s]%s", nl, nl);
+	return 0;
+}
+
 int settings_emit(settings_table *t, int as_json, int pretty)
 {
 	if (t == NULL)
 		return -1;
 	if (as_json) {
-		const char *nl = pretty ? "\n" : "";
-		fprintf(stdout, "[%s", nl);
-		for (size_t i = 0; i < t->count; i++) {
-			if (pretty)
-				fputs("\n\t{\n", stdout);
-			else
-				fputs("\n  {\n", stdout);
-			fputs(pretty ? "\t\t\"name\": " : "    \"name\": ", stdout);
-			json_escape(stdout, t->entries[i].key);
-			fputs(", ", stdout);
-			fputs(pretty ? "\n\t\t\"value\": " : "    \"value\": ", stdout);
-			{
-				char *v = settings_expand(t, t->entries[i].value);
+		int first = 1;
 
-				json_escape(stdout,
-				    (v != NULL) ? v : t->entries[i].value);
-				free(v);
-			}
-			fputs(pretty ? "\n\t}" : "  }", stdout);
-			if (i + 1 < t->count)
-				fputs(",", stdout);
-		}
-		fprintf(stdout, "%s]%s", nl, nl);
+		fprintf(stdout, "[%s", pretty ? "\n" : "");
+		json_emit_objects(t, pretty, &first);
+		fprintf(stdout, "%s]%s", pretty ? "\n" : "",
+		    pretty ? "\n" : "");
 		return 0;
 	}
 

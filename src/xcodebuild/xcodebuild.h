@@ -91,6 +91,10 @@ int settings_load_defaults(settings_table *t, const char *devpath,
 /* Print the table in `xcodebuild -showBuildSettings` format. */
 int settings_emit(settings_table *t, int as_json, int pretty);
 
+/* Every table's settings as a single JSON array, for the -alltargets case
+ * where emitting one array per target would not parse. */
+int settings_emit_json_all(settings_table **tables, size_t n, int pretty);
+
 /* Merge string entries of a plist dict (e.g. a pbxproj buildSettings node)
  * into the settings table. Array/dict values are flattened. */
 void settings_merge_plist_dict(settings_table *t, CFTypeRef dict);

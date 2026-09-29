@@ -1719,6 +1719,151 @@ static settings_table *resolve_settings(const xcodebuild_opts *opts,
 	return settings_for(opts, devpath, opts->target, NULL);
 }
 
+/* Resolve one target and keep its table for the caller to print.  Returns
+ * NULL on failure, which is not fatal to the walk: one unreadable target
+ * should not cost the others their output. */
+static settings_table *resolve_target(const xcodebuild_opts *opts,
+                                      const char *devpath, const char *target)
+{
+	return settings_for(opts, devpath, target, NULL);
+}
+
+static void emit_one_target(settings_table *t, const char *target,
+                            const char *action, const xcodebuild_opts *opts,
+                            int *rc)
+{
+	/*
+	 * The heading belongs to the console form only.  -json carries the
+	 * same two facts as the "action" and "target" fields of each object,
+	 * and printing a line of prose ahead of the array would leave the
+	 * output unparseable rather than merely redundant.
+	 *
+	 * The name is the resolved one, not the -target string: asked for
+	 * nothing in particular, Apple's tool names the target it settled on,
+	 * and a walk that reached a target by name still reports what the
+	 * project calls that target.
+	 */
+	if (!opts->json) {
+		const char *name = settings_get_or(t, "TARGET_NAME",
+		    (target != NULL) ? target : "");
+
+		printf("Build settings for action %s and target %s:\n", action,
+		    (name != NULL) ? name : "");
+	}
+	*rc |= settings_emit(t, opts->json, opts->pretty);
+}
+
+/*
+ * -showBuildSettings, which prints one block per target rather than one table.
+ *
+ * Each block is headed by the action and the target it describes -- the
+ * action is the one named on the command line, not always "build" -- and a
+ * -alltargets run walks the project's targets in the order -list prints them.
+ *
+ * That run ends by printing its first target's block a second time, byte for
+ * byte.  This is not a quirk of one project: two-target and one-target
+ * fixtures both show it, and the repeat always matches block one, so the
+ * block is emitted again rather than the sequence being left alone.  It looks
+ * like the default target being resolved once more after the walk.
+ */
+static int emit_build_settings(const xcodebuild_opts *opts, const char *devpath)
+{
+	const char *action = (opts->action != NULL) ? opts->action : "build";
+	int rc = 0;
+
+	/*
+	 * "-alltargets and also specify individual targets" is Apple wording
+	 * for the same refusal: the two ask for two different sets, and
+	 * honouring one would silently drop the other.
+	 */
+	if (opts->all_targets && opts->target != NULL) {
+		fprintf(stderr, "xcodebuild: error: You cannot specify "
+		    "-alltargets and also specify individual targets.\n");
+		return 64;
+	}
+
+	if (opts->target != NULL || !opts->all_targets) {
+		settings_table *t = resolve_target(opts, devpath, opts->target);
+		if (t == NULL)
+			return 1;
+		emit_one_target(t, opts->target, action, opts, &rc);
+		settings_destroy(t);
+		return rc ? 1 : 0;
+	}
+
+	char *project = detect_project(opts, opts->project_dir);
+	char **names = NULL, **guids = NULL;
+	int n = (project != NULL) ? xcindex_target_list(project, &names, &guids) : 0;
+
+	if (n <= 0) {
+		/* No targets to walk: fall back to the single default block so
+		 * the action still reports something rather than nothing. */
+		settings_table *t = resolve_target(opts, devpath, NULL);
+		if (t == NULL) {
+			free(project);
+			return 1;
+		}
+		emit_one_target(t, NULL, action, opts, &rc);
+		settings_destroy(t);
+		free(project);
+		return rc ? 1 : 0;
+	}
+
+	/*
+	 * Every target resolved first, so -json can emit one array across the
+	 * whole set.  Emitting as it went would open and close brackets per
+	 * target and leave the document unparseable.
+	 */
+	int nblocks = n + 1;    /* the walk, plus the repeat of the first */
+	settings_table **tables = (settings_table **)calloc((size_t)nblocks,
+	    sizeof(*tables));
+	const char **block_names = (const char **)calloc((size_t)nblocks,
+	    sizeof(*block_names));
+
+	if (tables == NULL || block_names == NULL) {
+		free(tables);
+		free(block_names);
+		for (int i = 0; i < n; i++) {
+			free(names[i]);
+			free(guids[i]);
+		}
+		free(names);
+		free(guids);
+		free(project);
+		return 1;
+	}
+
+	for (int i = 0; i < n; i++) {
+		tables[i] = resolve_target(opts, devpath, names[i]);
+		block_names[i] = (tables[i] != NULL) ? names[i] : "";
+	}
+	tables[n] = resolve_target(opts, devpath, names[0]);
+	block_names[n] = (tables[n] != NULL) ? names[0] : "";
+
+	if (opts->json) {
+		rc = settings_emit_json_all(tables, (size_t)nblocks, opts->pretty);
+	} else {
+		for (int i = 0; i < nblocks; i++) {
+			if (tables[i] == NULL)
+				continue;
+			emit_one_target(tables[i], block_names[i], action, opts, &rc);
+		}
+	}
+
+	for (int i = 0; i < nblocks; i++)
+		settings_destroy(tables[i]);
+	free(tables);
+	free(block_names);
+	for (int i = 0; i < n; i++) {
+		free(names[i]);
+		free(guids[i]);
+	}
+	free(names);
+	free(guids);
+	free(project);
+	return rc ? 1 : 0;
+}
+
 settings_table *xbuild_settings_for_target(const xcodebuild_opts *opts,
                                            const char *devpath,
                                            const char *target,
@@ -2495,19 +2640,8 @@ int main(int argc, char **argv)
 		return r;
 	}
 
-	if (opts->show_build_settings) {
-		settings_table *t = resolve_settings(opts, devpath);
-		if (t == NULL) {
-			free(devpath);
-			xbuild_opts_free(opts);
-			return 1;
-		}
-		int r = settings_emit(t, opts->json, opts->pretty);
-		settings_destroy(t);
-		free(devpath);
-		xbuild_opts_free(opts);
-		return r ? 1 : 0;
-	}
+	if (opts->show_build_settings)
+		return emit_build_settings(opts, devpath);
 
 	if (opts->show_buildable_products) {
 		settings_table *t = resolve_settings(opts, devpath);
