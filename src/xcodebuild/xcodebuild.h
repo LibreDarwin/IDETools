@@ -121,6 +121,10 @@ typedef struct {
 	char *sdk;
 	char *toolchain;
 	char *arch;
+	/* every -arch in the order given: they accumulate into one ARCHS
+	 * list, where "arch" above keeps only the last for selection. */
+	char **archs;
+	int n_archs;
 
 	/* destinations / data / paths */
 	char *destination;

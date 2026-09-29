@@ -135,6 +135,8 @@ void xbuild_opts_free(xcodebuild_opts *o)
 	free(o->action); free(o->result_bundle_path);
 	free_strv(o->overrides, o->n_overrides);
 	free(o->overrides);
+	free_strv(o->archs, o->n_archs);
+	free(o->archs);
 	free(o->argv);
 	free(o);
 }
@@ -1953,6 +1955,10 @@ static int exec_build_action(xcodebuild_opts *opts, const char *devpath,
 	if (opts->dry_run) {
 		rc = 0;
 	} else {
+		/* execvp does not flush: the invocation echo and the settings
+		 * section we just wrote are still in the stdio buffer and would
+		 * go with the old image unless they are pushed out first. */
+		fflush(stdout);
 		execvp(argv[0], argv);
 		fprintf(stderr, "xcodebuild: error: failed to exec '%s': %s\n", argv[0], strerror(errno));
 		rc = 1;
@@ -2142,8 +2148,18 @@ static xcodebuild_opts *parse_args(int argc, char **argv)
 			set_opt(&opts->configuration, consume_value(&i, argc, argv, val));
 		else if (strcmp(key, "-sdk") == 0)
 			set_opt(&opts->sdk, consume_value(&i, argc, argv, val));
-		else if (strcmp(key, "-arch") == 0)
-			set_opt(&opts->arch, consume_value(&i, argc, argv, val));
+		else if (strcmp(key, "-arch") == 0) {
+			const char *av = consume_value(&i, argc, argv, val);
+			set_opt(&opts->arch, av);
+			if (av != NULL && *av != '\0') {
+				char **grow = (char **)realloc(opts->archs,
+				    sizeof(char *) * (opts->n_archs + 1));
+				if (grow != NULL) {
+					opts->archs = grow;
+					opts->archs[opts->n_archs++] = strdup(av);
+				}
+			}
+		}
 		else if (strcmp(key, "-toolchain") == 0)
 			set_opt(&opts->toolchain, consume_value(&i, argc, argv, val));
 		else if (strcmp(key, "-destination") == 0)
@@ -2289,6 +2305,147 @@ static void print_invocation(int argc, char **argv)
 	putchar('\n');
 }
 
+/*
+ * Between the invocation and whatever the action prints, Apple repeats the
+ * settings the command line asked for -- and only those, so -target and
+ * -configuration are absent while -sdk and -arch are present, the latter
+ * accumulated across repeats.  The section is keyed-sorted and skipped
+ * entirely when the command line named no settings at all.
+ *
+ * Two things about it are counter-intuitive enough to be worth stating.
+ * -sdk is reported by canonical name (macosx26.5) even when given a path, and
+ * it outranks a bare SDKROOT= on the command line in either order, while two
+ * bare SDKROOT= overrides resolve to the last.  So the option-derived entries
+ * are locked once set and the bare overrides fill in behind them.
+ */
+struct cmdline_setting {
+	char *key;
+	char *value;
+	int locked;      /* from -sdk/-arch: a bare override cannot displace it */
+};
+
+static void cmdline_setting_add(struct cmdline_setting **list, int *n,
+    int *cap, const char *key, const char *value, int locked)
+{
+	for (int i = 0; i < *n; i++) {
+		if (strcmp((*list)[i].key, key) != 0)
+			continue;
+		if ((*list)[i].locked)
+			return;
+		free((*list)[i].value);
+		(*list)[i].value = strdup(value);
+		return;
+	}
+	if (*n == *cap) {
+		int grow = (*cap == 0) ? 8 : *cap * 2;
+		struct cmdline_setting *bigger = (struct cmdline_setting *)
+		    realloc(*list, sizeof(**list) * (size_t)grow);
+		if (bigger == NULL)
+			return;
+		*list = bigger;
+		*cap = grow;
+	}
+	(*list)[*n].key = strdup(key);
+	(*list)[*n].value = strdup(value);
+	(*list)[*n].locked = locked;
+	(*n)++;
+}
+
+static int cmdline_setting_cmp(const void *a, const void *b)
+{
+	const struct cmdline_setting *sa = (const struct cmdline_setting *)a;
+	const struct cmdline_setting *sb = (const struct cmdline_setting *)b;
+	return strcmp(sa->key, sb->key);
+}
+
+/*
+ * The name Apple prints for an SDK, which is its CanonicalName -- macosx26.5
+ * for a -sdk macosx or a -sdk pointing straight at the .sdk directory.  Falls
+ * back to the directory's own name, lowercased and without the suffix, so an
+ * SDK whose SDKSettings.plist is unreadable still reports something usable.
+ */
+static char *sdk_canonical_name(const char *devpath, const char *sdkarg)
+{
+	char *path = (sdkarg[0] == '/') ? strdup(sdkarg) :
+	    xt_find_sdk(devpath, sdkarg);
+	char *name = NULL;
+	if (path != NULL) {
+		name = xt_sdk_setting(path, "CanonicalName");
+		if (name == NULL) {
+			const char *base = strrchr(path, '/');
+			base = (base != NULL) ? base + 1 : path;
+			size_t n = strlen(base);
+			if (n > 4 && strcmp(base + n - 4, ".sdk") == 0)
+				n -= 4;
+			name = malloc(n + 1);
+			if (name != NULL) {
+				for (size_t i = 0; i < n; i++)
+					name[i] = (char)tolower((unsigned char)base[i]);
+				name[n] = '\0';
+			}
+		}
+		free(path);
+	}
+	return name;
+}
+
+static void print_cmdline_settings(const xcodebuild_opts *opts, const char *devpath)
+{
+	struct cmdline_setting *list = NULL;
+	int n = 0, cap = 0;
+
+	if (opts->n_archs > 0) {
+		size_t total = 1;
+		for (int i = 0; i < opts->n_archs; i++)
+			total += strlen(opts->archs[i]) + 1;
+		char *joined = malloc(total);
+		if (joined != NULL) {
+			joined[0] = '\0';
+			for (int i = 0; i < opts->n_archs; i++) {
+				if (i > 0)
+					strcat(joined, " ");
+				strcat(joined, opts->archs[i]);
+			}
+			cmdline_setting_add(&list, &n, &cap, "ARCHS", joined, 1);
+			free(joined);
+		}
+	}
+
+	if (opts->sdk != NULL && *opts->sdk != '\0') {
+		char *name = sdk_canonical_name(devpath, opts->sdk);
+		if (name != NULL) {
+			cmdline_setting_add(&list, &n, &cap, "SDKROOT", name, 1);
+			free(name);
+		}
+	}
+
+	for (size_t i = 0; i < opts->n_overrides; i++) {
+		const char *kv = opts->overrides[i];
+		const char *eq = strchr(kv, '=');
+		if (eq == NULL || eq == kv)
+			continue;
+		char *key = strndup(kv, (size_t)(eq - kv));
+		if (key != NULL) {
+			cmdline_setting_add(&list, &n, &cap, key, eq + 1, 0);
+			free(key);
+		}
+	}
+
+	if (n > 0) {
+		qsort(list, (size_t)n, sizeof(*list), cmdline_setting_cmp);
+		fputs("Build settings from command line:\n", stdout);
+		for (int i = 0; i < n; i++)
+			fprintf(stdout, "    %s = %s\n", list[i].key, list[i].value);
+		putchar('\n');
+	}
+
+	for (int i = 0; i < n; i++) {
+		free(list[i].key);
+		free(list[i].value);
+	}
+	free(list);
+}
+
 int main(int argc, char **argv)
 {
 	xcodebuild_opts *opts = parse_args(argc, argv);
@@ -2324,8 +2481,10 @@ int main(int argc, char **argv)
 	 * -help, -version, -showsdks -- do not, and neither does an option
 	 * that failed to parse, since parse_args has already returned by now.
 	 */
-	if (!opts->quiet && !opts->json)
+	if (!opts->quiet && !opts->json) {
 		print_invocation(argc, argv);
+		print_cmdline_settings(opts, devpath);
+	}
 
 	if (opts->list_targets) {
 		char *project = detect_project(opts, opts->project_dir);
