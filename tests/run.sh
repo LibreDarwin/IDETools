@@ -1091,6 +1091,180 @@ is "an output override beats the derived name" Other \
 is "and the derived GUID" deadbeef \
     "$(setting "$PROJ" PROJECT_GUID PROJECT_GUID=deadbeef -sdk macosx)"
 
+# ------------------------------------------------------------------
+# -showBuildSettingsForIndex
+# ------------------------------------------------------------------
+#
+# The index service is answered per source file rather than per target: one
+# record per file, holding the arguments it wants the compiler to see.  Every
+# expectation below is read off the project's own settings or its own pbxproj,
+# so a flag that stops following its setting fails here rather than agreeing
+# with itself.
+
+echo "-showBuildSettingsForIndex"
+
+# idx <project> [extra args...] -> the index object, echo and target headers
+# removed.  The console form opens with the command it ran and names each
+# target before its object, as -showBuildSettings does; everything below wants
+# the object alone.  The -json form has neither, and starts at its brace.
+idx() {
+	_p=$1; shift
+	"$TOOL" -project "$_p" -showBuildSettingsForIndex "$@" 2>/dev/null |
+	    awk '/^Build settings for target/ { next } /^\{$/ { keep = 1 } keep'
+}
+
+# idx_walk <project> [extra args...] -> the target names the console form names,
+# in the order it names them.  The header is the only place a target's name
+# appears outside its own object, so this is the order of the walk.
+idx_walk() {
+	_p=$1; shift
+	"$TOOL" -project "$_p" -showBuildSettingsForIndex "$@" 2>/dev/null |
+	    sed -n 's/^Build settings for target \(.*\):$/\1/p'
+}
+
+# idx_rec <project> <source-basename> [extra args...] -> one source's record as
+# `key = value` lines, each list joined by spaces.  Read from the -json form,
+# where a source sits at four spaces and its keys at six, so the eight-space
+# arguments and the closing `],` cannot be mistaken for the next record.  A
+# source is addressed by basename because the key is an absolute path.
+idx_rec() {
+	_p=$1; _b=$2; shift 2
+	"$TOOL" -project "$_p" -showBuildSettingsForIndex -json "$@" 2>/dev/null |
+	    awk -v want="$_b" '
+		/^    "/ {
+			k = $0; sub(/^    "/, "", k); sub(/" : \{$/, "", k)
+			inside = (k ~ ("/" want "$"))
+			key = ""; buf = ""
+			next
+		}
+		/^    \}/ { inside = 0; next }
+		!inside { next }
+		/^      "[^"]*" : \[$/ {
+			key = $1; gsub(/"/, "", key); sub(/ : \[$/, "", key)
+			buf = ""; n = 0
+			next
+		}
+		/^      \]/ { if (key != "") { print key " = " buf; key = ""; buf = "" } next }
+		/^        / {
+			v = $0; sub(/^ *"/, "", v); sub(/",?$/, "", v)
+			buf = (n++ == 0) ? v : buf " " v
+			next
+		}
+		{
+			key = $1; gsub(/"/, "", key); sub(/ : $/, "", key)
+			v = $0; sub(/^[^:]*: /, "", v); gsub(/^"|",?$/, "", v)
+			print key " = " v
+		}
+	'
+}
+
+# The six keys, in the order Apple writes them.  Order is the point: a reader
+# diffing two runs reads it, and a key moved is a change no test of the values
+# would have noticed.
+is "a record names its keys in Apple's order" \
+    "assetSymbolIndexPath clangASTBuiltProductsDir clangASTCommandArguments LanguageDialect outputFilePath toolchains" \
+    "$(idx_rec "$PROJ" index.c -target "$tgt_tool" | sed 's/ = .*//' | paste -sd' ' -)"
+
+# Order alone cannot catch two keys' headers trading places, since the six
+# names would still be in the six positions.  What such a swap breaks is which
+# value belongs to which name, so each of the two is checked against what it
+# should hold: the dialect is a language identifier, the built-products
+# directory the products directory.
+rec=$(idx_rec "$PROJ" index.c -target "$tgt_tool")
+is "LanguageDialect holds the language, not a path" \
+    Xcode.SourceCodeLanguage.C "$(printf '%s\n' "$rec" | sed -n 's/^LanguageDialect = //p')"
+is "clangASTBuiltProductsDir holds the products directory" \
+    "$(setting "$PROJ" CONFIGURATION_BUILD_DIR -sdk macosx)" \
+    "$(printf '%s\n' "$rec" | sed -n 's/^clangASTBuiltProductsDir = //p')"
+
+# One record per source the target compiles.  Counted from the pbxproj's own
+# build-file entries, which appear once per definition and once per phase, so
+# the names are made unique first and the loader's own file left out: the count
+# cannot follow the tool's own tally.
+nphase=$(sed -n 's/.*\/\* \([A-Za-z0-9_]*\.c\) in Sources \*\/.*/\1/p' \
+    "$PROJ/project.pbxproj" | grep -v '^xcodebuildLoader\.c$' | sort -u | awk 'END { print NR }')
+is "one record per source file in the project" "$nphase" \
+    "$(idx "$PROJ" -target "$tgt_tool" -json | grep -c '^    "/')"
+
+# The object path is the target's own build directory, not a fixed one: a
+# record that named a hardcoded directory would pass whatever OBJROOT was, and
+# one that left out the target's own name would pass only for a target called
+# xcodebuild.
+is "an object's path is the target's own directory under the build" \
+    "$(setting "$PROJ" CONFIGURATION_TEMP_DIR -sdk macosx)/$tgt_tool.build/Objects-normal/$(setting "$PROJ" ARCHS -sdk macosx)/index.o" \
+    "$(idx_rec "$PROJ" index.c -target "$tgt_tool" | sed -n 's/^outputFilePath = //p')"
+
+args=$(idx_rec "$PROJ" index.c -target "$tgt_tool" | sed -n 's/^clangASTCommandArguments = //p')
+wordafter() { printf '%s' "$args" | sed -n "s/.*$1 \\([^ ]*\\).*/\\1/p"; }
+
+# The three arguments that name where and how to compile.  Each is checked
+# against the setting it is derived from, so these fail if the derivation
+# breaks rather than if a path moves.  None of them names an -sdk: the index
+# build is asked for the project's own SDK, and naming one here would make the
+# two sides resolve different SDKs and agree about neither.
+is "-isysroot names the SDK the settings resolved" \
+    "$(setting "$PROJ" SDKROOT)" "$(wordafter -isysroot)"
+is "-target carries the arch and the deployment target" \
+    "$(setting "$PROJ" ARCHS -sdk macosx)-apple-macos$(setting "$PROJ" MACOSX_DEPLOYMENT_TARGET -sdk macosx)" \
+    "$(wordafter -target)"
+is "-x names the source language" "-x c" \
+    "$(printf '%s' "$args" | cut -d' ' -f1,2)"
+is "the language standard follows GCC_C_LANGUAGE_STANDARD" \
+    "-std=$(setting "$PROJ" GCC_C_LANGUAGE_STANDARD -sdk macosx)" \
+    "$(printf '%s' "$args" | tr ' ' '\n' | grep -e '^-std=')"
+
+# The optimization and debug flags are settings restated, so they are compared
+# as such rather than against a constant that would also pass if the flag were
+# hardcoded the other way.
+is "the optimization flag is the level restated" \
+    "-O$(setting "$PROJ" GCC_OPTIMIZATION_LEVEL -sdk macosx)" \
+    "$(printf '%s' "$args" | tr ' ' '\n' | grep -e '^-O[0-9gs]$' | head -1)"
+is "-g is present exactly as DEBUGGING_SYMBOLS asks" \
+    "$([ "$(setting "$PROJ" DEBUGGING_SYMBOLS -sdk macosx)" = YES ] && echo 1 || echo 0)" \
+    "$(printf '%s' "$args" | tr ' ' '\n' | grep -cx -e '-g')"
+
+# -fvisibility=hidden follows the kind of product, not a setting either
+# project target says anything about.  A tool compiles with it, a dylib
+# without, and the two are the only products in this project, so a rule keyed
+# on the product and one keyed on nothing at all are told apart here.
+is "a tool target compiles with -fvisibility=hidden, once per source" \
+    "$nphase" "$(idx "$PROJ" -target "$tgt_tool" | grep -c 'fvisibility=hidden')"
+is "a library target compiles without it" 0 \
+    "$(idx "$PROJ" -target "$tgt_lib" | grep -c 'fvisibility=hidden')"
+
+# An index build is answered from the project and the build record, not from
+# the command line.  The -showBuildSettings half of each pair is what makes the
+# test mean something: it shows the argument is one the tool does honour, and
+# honours elsewhere.
+is "-showBuildSettings does honour -configuration" Debug \
+    "$(setting "$PROJ" CONFIGURATION -configuration Debug)"
+is "and the index build ignores it" \
+    "$(idx "$PROJ" -target "$tgt_tool")" \
+    "$(idx "$PROJ" -target "$tgt_tool" -configuration Debug)"
+
+is "-showBuildSettings does honour KEY=VALUE" 0 \
+    "$(setting "$PROJ" GCC_OPTIMIZATION_LEVEL GCC_OPTIMIZATION_LEVEL=0 -sdk macosx)"
+is "and the index build ignores it" \
+    "$(idx "$PROJ" -target "$tgt_tool")" \
+    "$(idx "$PROJ" -target "$tgt_tool" GCC_OPTIMIZATION_LEVEL=0 OTHER_CFLAGS=-DZZZ)"
+
+# The walk over every target.  The console form ends by naming the first target
+# again, as -showBuildSettings does; -json has no use for a repeated key and
+# orders its targets by name instead, which is a different order from the
+# project's own.
+is "the console walk ends by naming the first target again" \
+    "$tgt_tool $tgt_lib $tgt_tool" \
+    "$(idx_walk "$PROJ" -alltargets | paste -sd' ' -)"
+is "-json names each target once, in order by name" \
+    "$(printf '%s\n%s\n' "$tgt_lib" "$tgt_tool" | sort | paste -sd' ' -)" \
+    "$(idx "$PROJ" -alltargets -json | sed -n 's/^  "\(.*\)" : {$/\1/p' | paste -sd' ' -)"
+
+# A target whose sources are all absent gets a blank object, not {}.  The Two
+# fixture's files are not on disk, which is the case: a record that cannot be
+# filled is left empty rather than invented.
+is "a target with no files on disk is a blank object" \
+    "$(printf '{\n\n}')" "$(idx "$ROOT/tests/fixtures/Two.xcodeproj" -target hello)"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

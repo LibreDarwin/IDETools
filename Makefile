@@ -215,6 +215,12 @@ test: all
 parity: all
 	@MINE=$(XCINDEXTEST) sh tests/xcindex-parity.sh
 
+# Likewise for -showBuildSettingsForIndex, which has a different oracle: Apple's
+# xcodebuild rather than its xcindex-test, and whose settings the reimplementation
+# reads itself rather than being handed.
+forindex-parity: all
+	@MINE=$(XCODEBUILD) sh tests/forindex-parity.sh
+
 clean:
 	rm -rf build
 
