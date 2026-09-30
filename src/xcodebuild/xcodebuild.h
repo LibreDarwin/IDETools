@@ -38,6 +38,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* This project's own version, kept in step with CURRENT_PROJECT_VERSION in
  * project.pbxproj, the loader's PROJECT: marker, and the release tag.  It is
@@ -197,6 +198,12 @@ char *xbuild_detect_project(const xcodebuild_opts *opts);
 /* index.c -- -showBuildSettingsForIndex: every source file's compile settings,
  * as the index service asks for them. */
 int xcodebuild_emit_index_settings(const xcodebuild_opts *opts, const char *devpath);
+
+/* The raw 16-byte MD5 of a buffer, for the callers that build a filename out
+ * of the digest rather than print it.  See the note above md5_block() in
+ * xcodebuild.c for why the digest is computed here rather than taken from
+ * CommonCrypto. */
+void md5_digest(const void *data, size_t len, uint8_t out[16]);
 
 /* build.c -- compile and link a target's sources. */
 settings_table *xbuild_settings_for_target(const xcodebuild_opts *opts,

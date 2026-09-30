@@ -282,11 +282,11 @@ static void object_name(const char *source, char *buf, size_t len)
  * consulted for it -- a project that has been indexed once still follows
  * its scheme.
  *
- * What the record is read for is the arena.  It carries the data-store
- * path, which is where -index-store-path comes from and why one project
- * has that argument and another does not, and it lives in DerivedData under
- * a key derived from the project's path, so a project is only ever found to
- * have one once something has indexed it there.
+ * What the record is read for is the arena: it carries the data-store path
+ * of a build that really did index, and it is believed in preference to a
+ * computed one when it has one.  It is not what decides whether this build
+ * indexes at all -- see index_store_enabled() -- because a record is only
+ * there once something has indexed, and asking is what one does before that.
  */
 typedef struct {
 	char *configuration;	/* the configuration the index build used */
@@ -393,11 +393,13 @@ static char *read_file(const char *path)
  * The DerivedData directory belonging to one project.
  *
  * Each directory's info.plist records the workspace path it was made for, so
- * the belonging is read rather than computed.  That matters because the
- * directory's own name ends in a hash of that path -- base-36, variable in
- * length, and not a digest of anything the project file holds, as
- * "Sources-eletdimxwvsoilfpxwjllozthpjn" and its neighbours show.  The
- * workspace path is the one thing both sides agree on.
+ * the belonging is read rather than computed.  That is deliberate: the
+ * directory's own name ends in a hash of that path, and although derived_
+ * data_leaf() below can compute that name, the workspace path is the one
+ * thing both sides agree on, and a project indexed through a workspace is
+ * filed under the workspace rather than under itself.  The hash is used
+ * where a name has to be produced for a directory that does not exist yet,
+ * which is the common case here and the one no info.plist can answer.
  */
 static char *find_derived_data(const char *root, const char *project)
 {
@@ -513,6 +515,178 @@ static void index_record_free(index_record *rec)
 }
 
 /* ------------------------------------------------------------------ */
+/* Where the index store is                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The name Xcode gives a project's DerivedData directory:
+ *
+ *	<ProjectName>-<28 letters>
+ *
+ * The 28 letters are a function of the project's path and of nothing else,
+ * which is why the directory turns up before anything has been built there:
+ * the name is computed, not left over.  The function is the one in
+ * +[NSString dvt_stringWithUniqueFileNameSuffixForDistinguishingStrings:]
+ * (DVTFoundation), read out of the disassembly and checked against the
+ * directories Xcode actually makes:
+ *
+ *	digest = MD5(the project's path, UTF-8)
+ *	suffix = base26(digest[0..8]) ++ base26(digest[8..16])
+ *
+ * where each half is read as one big-endian 64-bit number and written as
+ * exactly 14 letters, most significant first, 'a' for zero.  Two details
+ * make it worth stating, because both are ways to be nearly right:
+ *
+ *   - the two halves are rendered independently, so this is not the 128-bit
+ *     digest written in base 26.  That would be 28 letters too, and the two
+ *     differ in every position.
+ *   - each half is 14 letters wide whether or not it needs them, so a small
+ *     digest still yields leading 'a's.  Nothing is trimmed.
+ *
+ * The path hashed is the project as it was named, made absolute and
+ * otherwise left alone: it is not resolved through symlinks, so a project
+ * reached through a link gets the directory belonging to the link's own
+ * path.
+ */
+static char *derived_data_leaf(const char *project)
+{
+	uint8_t digest[16];
+	char suffix[29];
+	const char *base, *dot;
+	char *out;
+	size_t len;
+	int half, digit;
+
+	if (project == NULL || *project == '\0')
+		return NULL;
+	base = strrchr(project, '/');
+	base = (base != NULL) ? base + 1 : project;
+	/*
+	 * Only the last extension goes: My.Proj.xcodeproj is filed as
+	 * My.Proj-<letters>, not as My-<letters>.  The hash covers the whole
+	 * path either way, so only the name in front of it moves.
+	 */
+	dot = strrchr(base, '.');
+	if (dot == NULL || dot == base)
+		dot = base + strlen(base);
+
+	md5_digest(project, strlen(project), digest);
+	for (half = 0; half < 2; half++) {
+		uint64_t v = 0;
+
+		for (digit = 0; digit < 8; digit++)
+			v = (v << 8) | digest[half * 8 + digit];
+		for (digit = 13; digit >= 0; digit--) {
+			suffix[half * 14 + digit] = (char)('a' + (v % 26));
+			v /= 26;
+		}
+	}
+	suffix[28] = '\0';
+
+	len = (size_t)(dot - base) + 1 + 28 + 1;
+	if ((out = malloc(len)) == NULL)
+		return NULL;
+	snprintf(out, len, "%.*s-%s", (int)(dot - base), base, suffix);
+	return out;
+}
+
+static char *index_store_path(const xcodebuild_opts *opts, const char *project)
+{
+	static const char tail[] = "/Index.noindex/DataStore";
+	char *root, *leaf, *out;
+	size_t len;
+
+	if ((root = derived_data_root(opts)) == NULL)
+		return NULL;
+	/*
+	 * The per-project directory only exists under the default root.  A
+	 * -derivedDataPath is taken as it stands -- one store for whatever is
+	 * built into it, with no project-named level in between -- so naming
+	 * the leaf here would put the store one level too deep for it to be
+	 * found, and nothing would ever be written to it.
+	 */
+	leaf = (opts->derived_data_path != NULL &&
+	    *opts->derived_data_path != '\0') ? NULL : derived_data_leaf(project);
+	if (leaf == NULL && (opts->derived_data_path == NULL ||
+	    *opts->derived_data_path == '\0')) {
+		free(root);
+		return NULL;
+	}
+	len = strlen(root) + (leaf != NULL ? 1 + strlen(leaf) : 0) + sizeof(tail);
+	if ((out = malloc(len)) == NULL)
+		out = NULL;
+	else if (leaf != NULL)
+		snprintf(out, len, "%s/%s%s", root, leaf, tail);
+	else
+		snprintf(out, len, "%s%s", root, tail);
+	free(root);
+	free(leaf);
+	return out;
+}
+
+/*
+ * Whether this build would write an index store at all.
+ *
+ * This is the question that decides both of the index arguments, and it is
+ * not the question the record answers.  A record only exists once something
+ * has indexed the project, so gating on it reports no index store for every
+ * project that has not been indexed yet -- which is the state a caller
+ * asking for these settings is normally in, and the reason the arguments
+ * were missing.  What actually decides it is COMPILER_INDEX_STORE_ENABLE,
+ * which Xcode does not report in this output and which defaults to on for
+ * Debug and off for every other configuration.  A project that states it
+ * says otherwise, and is obeyed:
+ *
+ *	Debug    + unset   ->  indexed
+ *	Release  + unset   ->  not indexed
+ *	Debug    + NO      ->  not indexed
+ *	Release  + YES     ->  indexed
+ *
+ * The configuration is the one the build resolves to, so the fixture that
+ * takes Debug from its scheme indexes and the Release project does not,
+ * from one rule rather than two.
+ */
+static int index_store_enabled(const settings_table *t, const char *configuration)
+{
+	char *stated = value_of(t, "COMPILER_INDEX_STORE_ENABLE", "");
+	int on;
+
+	/*
+	 * "Default" is the word this setting carries when nothing has asked for
+	 * it, and it is not an answer -- it is the absence of one, so the
+	 * compiler goes on to decide by configuration.  Any other word is a real
+	 * decision and is taken at face value, including the ones that are
+	 * neither YES nor NO.
+	 */
+	if (*stated != '\0' && strcmp(stated, "Default") != 0) {
+		on = is_yes(stated);
+		free(stated);
+		return on;
+	}
+	free(stated);
+	return configuration != NULL && strcmp(configuration, "Debug") == 0;
+}
+
+/*
+ * The arena this build indexes into, or NULL when it indexes nowhere.
+ *
+ * A record that carries a data store is believed, since that is a path
+ * something really did write to.  Otherwise the directory is named as above
+ * -- it does not have to exist for its name to be the right one, and the
+ * path is only ever reported, not opened.
+ */
+static char *index_store_for(const xcodebuild_opts *opts,
+    const settings_table *t, const char *project, const char *configuration,
+    const index_record *rec)
+{
+	if (!index_store_enabled(t, configuration))
+		return NULL;
+	if (rec->index_data_store && rec->index_store != NULL)
+		return strdup(rec->index_store);
+	return index_store_path(opts, project);
+}
+
+/* ------------------------------------------------------------------ */
 /* The SDK statistics cache                                            */
 /* ------------------------------------------------------------------ */
 
@@ -525,22 +699,33 @@ static void index_record_free(index_record *rec)
  * The name is reported whole.  An internal SDK's cache was once reported with
  * only its first sixteen digits, which looked like a rule; it was a stale
  * cache, and the file that is on disk now is the one Xcode names.
+ *
+ * The directory sits directly under the derived data root, beside the
+ * per-project directories rather than inside one, so it moves with a
+ * -derivedDataPath and is looked for wherever the caller says that is.
  */
-static char *statcache_path(const char *sdk_name)
+static char *statcache_path(const xcodebuild_opts *opts, const char *sdk_name)
 {
 	static const char ext[] = ".sdkstatcache";
-	const char *home = getenv("HOME");
+	static const char sub[] = "/SDKStatCaches.noindex";
 	char dir[PATH_MAX];
-	char *best = NULL;
+	char *root, *best = NULL;
 	size_t best_len = 0;
-	size_t slen;
+	size_t slen, len;
 	DIR *d;
 	struct dirent *ent;
 
-	if (sdk_name == NULL || *sdk_name == '\0' || home == NULL)
+	if (sdk_name == NULL || *sdk_name == '\0')
 		return NULL;
-	snprintf(dir, sizeof(dir), "%s/Library/Developer/Xcode/DerivedData/"
-	    "SDKStatCaches.noindex", home);
+	if ((root = derived_data_root(opts)) == NULL)
+		return NULL;
+	len = strlen(root) + sizeof(sub);
+	if (len > sizeof(dir)) {
+		free(root);
+		return NULL;
+	}
+	snprintf(dir, sizeof(dir), "%s%s", root, sub);
+	free(root);
 	if ((d = opendir(dir)) == NULL)
 		return NULL;
 
@@ -578,9 +763,10 @@ static char *statcache_path(const char *sdk_name)
 /* ------------------------------------------------------------------ */
 
 typedef struct {
+	const xcodebuild_opts *opts;
 	const settings_table *t;
 	const char *source;
-	const index_record *rec;
+	char *index_store;	/* the arena, or NULL when this build indexes none */
 	char *arch;
 	char *dialect;		/* the LanguageDialect field */
 	char *xarg;		/* what -x is given */
@@ -642,16 +828,17 @@ static char *resolve_arch(const settings_table *t)
 	return first;
 }
 
-static void index_file_open(index_file *f, const settings_table *t,
-    const char *source, const index_record *rec)
+static void index_file_open(index_file *f, const xcodebuild_opts *opts,
+    const settings_table *t, const char *source, const char *index_store)
 {
 	char dbuf[128], xbuf[32], leaf[PATH_MAX];
 	char *objroot;
 
 	memset(f, 0, sizeof(*f));
+	f->opts = opts;
 	f->t = t;
 	f->source = source;
-	f->rec = rec;
+	f->index_store = (index_store != NULL) ? strdup(index_store) : NULL;
 
 	dialect_for(source, dbuf, sizeof(dbuf), xbuf, sizeof(xbuf));
 	f->dialect = strdup(dbuf);
@@ -672,24 +859,20 @@ static void index_file_open(index_file *f, const settings_table *t,
 	}
 
 	/*
-	 * Two shapes of outputFilePath are observed, and they differ by more
-	 * than the field: when the record carries a data store, the Sources
-	 * fixture reports the object path with the OBJROOT prefix gone and a
-	 * leading slash left behind --
+	 * An indexing build reports its object with the OBJROOT prefix gone and
+	 * a leading slash left behind --
 	 *
 	 *	/Sources.build/Debug/hello.build/Objects-normal/arm64/main.o
 	 *
-	 * -- while the -o argument two lines above still names the full path,
-	 * and it is only in that case that -index-unit-output-path is passed
-	 * at all.  A project with no record (IDETools) and one whose roots
-	 * come from the arena rather than from the project (a scratch project
-	 * that sets neither SYMROOT nor OBJROOT) both report the whole path
-	 * and pass no such argument.  So the field and the argument travel
-	 * together, and the shortened form is what a project that keeps its
-	 * own object root gets.
+	 * -- and that shortened form is also what -index-unit-output-path is
+	 * given, so the field and the argument travel together.  A build that
+	 * indexes nothing reports the whole path and passes no such argument,
+	 * which is what the two fixtures differ on: the same project file with
+	 * its scheme's configuration changed from Debug to Release stops
+	 * indexing, and the path goes back to being absolute.
 	 */
 	f->unit_output = strdup(f->object);
-	if (rec->index_data_store && rec->index_store != NULL) {
+	if (f->index_store != NULL) {
 		objroot = value_of(t, "OBJROOT", "");
 		if (*objroot != '\0' && strncmp(f->object, objroot,
 		    strlen(objroot)) == 0) {
@@ -702,6 +885,7 @@ static void index_file_open(index_file *f, const settings_table *t,
 
 static void index_file_close(index_file *f)
 {
+	free(f->index_store);
 	free(f->arch);
 	free(f->dialect);
 	free(f->xarg);
@@ -717,7 +901,7 @@ static void index_file_close(index_file *f)
 
 static int has_arena(const index_file *f)
 {
-	return f->rec->index_data_store && f->rec->index_store != NULL;
+	return f->index_store != NULL;
 }
 
 /* The vector, in the order Apple writes it. */
@@ -749,7 +933,7 @@ static void index_file_arguments(index_file *f, strvec *out)
 	sv_push(out, "-x");
 	sv_push(out, f->xarg);
 
-	if ((statcache = statcache_path(sdk_name)) != NULL) {
+	if ((statcache = statcache_path(f->opts, sdk_name)) != NULL) {
 		sv_push(out, "-ivfsstatcache");
 		sv_push(out, statcache);
 		free(statcache);
@@ -770,7 +954,7 @@ static void index_file_arguments(index_file *f, strvec *out)
 
 	if (has_arena(f)) {
 		sv_push(out, "-index-store-path");
-		sv_push(out, f->rec->index_store);
+		sv_push(out, f->index_store);
 	}
 
 	/*
@@ -999,8 +1183,9 @@ static int compare_path(const void *a, const void *b)
  * `name` is the resolved target, not the -target string: asked for nothing in
  * particular the project still has one target, and it is that one whose
  * sources are listed. */
-static void print_target(FILE *fp, const char *name, settings_table *t,
-    const char *project, const index_record *rec, int outer)
+static void print_target(FILE *fp, const char *name,
+    const xcodebuild_opts *opts, settings_table *t, const char *project,
+    char *index_store, int outer)
 {
 	char **sources = NULL;
 	int n = (project != NULL) ?
@@ -1031,7 +1216,7 @@ static void print_target(FILE *fp, const char *name, settings_table *t,
 		print_indent(fp, outer + 2);
 		print_json_string(fp, sources[i]);
 		fputs(" : ", fp);
-		index_file_open(&f, t, sources[i], rec);
+		index_file_open(&f, opts, t, sources[i], index_store);
 		print_record(fp, &f, outer + 2);
 		index_file_close(&f);
 	}
@@ -1056,6 +1241,7 @@ static void emit_index_target(const xcodebuild_opts *opts, const char *devpath,
 	settings_table *t = xbuild_settings_for_target(effective, devpath, name,
 	    project);
 	const char *tname;
+	char *store;
 
 	if (t == NULL)
 		return;
@@ -1066,6 +1252,10 @@ static void emit_index_target(const xcodebuild_opts *opts, const char *devpath,
 	 * what the project calls that target. */
 	tname = settings_get_or(t, "TARGET_NAME", (name != NULL) ? name : "");
 
+	/* Every source of one target shares the arena, so it is settled once
+	 * here and each file's record is handed its own copy. */
+	store = index_store_for(opts, t, project, effective->configuration, rec);
+
 	if (opts->json) {
 		if (!*first)
 			fputs(",\n", stdout);
@@ -1073,12 +1263,13 @@ static void emit_index_target(const xcodebuild_opts *opts, const char *devpath,
 		print_indent(stdout, indent);
 		print_json_string(stdout, tname);
 		fputs(" : ", stdout);
-		print_target(stdout, tname, t, project, rec, indent);
+		print_target(stdout, tname, opts, t, project, store, indent);
 	} else {
 		printf("Build settings for target %s:\n", tname);
-		print_target(stdout, tname, t, project, rec, indent);
+		print_target(stdout, tname, opts, t, project, store, indent);
 		fputc('\n', stdout);
 	}
+	free(store);
 	settings_destroy(t);
 }
 

@@ -1325,6 +1325,176 @@ is "and is refused as the target it named" \
     "xcodebuild: error: The project '$TWO' does not contain a target named ''." \
     "$fi_empty"
 
+# --- the index arena --------------------------------------------------------
+#
+# A build that indexes names its arena twice over: as -index-store-path, and as
+# -index-unit-output-path, whose value is also the object path with the OBJROOT
+# prefix taken off.  A build that indexes nothing names neither, and reports its
+# object whole.
+#
+# The arena's directory is named from the project's path, so at a given path the
+# name is a given string.  The two names below are read off Apple's answers for
+# the two paths this section lays down itself, at paths of its own choosing
+# rather than the repository's, so that the expectations do not move with the
+# checkout: this repository at a different path is a different project path, and
+# would be answered with a different name.
+VEC=/tmp/idetools-index-arena-vec
+
+# vec <name> -- lay the Sources fixture down at a path of this section's
+# choosing, and say where it went.  The fixture brings its source file with it,
+# since a source that is not on disk is answered with an empty record.
+vec() {
+	rm -rf "$VEC/$1"
+	mkdir -p "$VEC/$1"
+	cp -R "$ROOT/tests/fixtures/Sources.xcodeproj" "$VEC/$1/$1.xcodeproj"
+	cp -R "$ROOT/tests/fixtures/src" "$VEC/$1/src"
+	printf '%s' "$VEC/$1/$1.xcodeproj"
+}
+
+# The three values, taken out one at a time.  A flag and its value are two
+# words, so the value is the word after the flag and not the flag with its own
+# name taken off: a flag that lost its value, and one that gained a second, are
+# told apart by this and not by a pattern that matched either.
+idx_arena() {
+	idx_rec "$1" main.c | sed -n 's/^clangASTCommandArguments = //p' |
+	    tr ' ' '\n' |
+	    awk 'want { print; exit } /^-index-store-path$/ { want = 1 }'
+}
+idx_unit() {
+	idx_rec "$1" main.c | sed -n 's/^clangASTCommandArguments = //p' |
+	    tr ' ' '\n' |
+	    awk 'want { print; exit } /^-index-unit-output-path$/ { want = 1 }'
+}
+idx_ofp() { idx_rec "$1" main.c | sed -n 's/^outputFilePath = //p'; }
+
+# vec_release <project> -- point the scheme's launch action at Release, which is
+# the configuration an index build reads.  A -configuration on the command line
+# will not do it: this build answers from the project, as the expectations
+# above already show.
+vec_release() {
+	_s=$1/xcshareddata/xcschemes/MyHello.xcscheme
+	awk '/<LaunchAction/ { l = 1 }
+	     l && /buildConfiguration = "/ {
+	         sub(/buildConfiguration = "[^"]*"/, "buildConfiguration = \"Release\"")
+	         l = 0
+	     }' "$_s" > "$_s.new" && mv "$_s.new" "$_s"
+}
+
+# vec_enable <project> <value> -- say COMPILER_INDEX_STORE_ENABLE in every
+# configuration the project has, the project-level pair and the target-level
+# pair alike, so that which of the two levels wins is not part of what is being
+# tested.  An empty value takes the line back out again, which is how the
+# setting is worded when nothing has set it: left in place with nothing after
+# the equals sign, it is not a setting at all, and a project carrying one is not
+# a project this can read.  Said twice, it is said once.
+vec_enable() {
+	awk -v v="$2" '
+		/^[[:space:]]*COMPILER_INDEX_STORE_ENABLE =/ { next }
+		{ print }
+		/^[[:space:]]*GCC_OPTIMIZATION_LEVEL = [0-9]*;$/ && v != "" {
+			match($0, /^[[:space:]]*/)
+			printf "%sCOMPILER_INDEX_STORE_ENABLE = %s;\n", substr($0, 1, RLENGTH), v
+		}
+	' "$1/project.pbxproj" > "$1/project.pbxproj.new" &&
+	    mv "$1/project.pbxproj.new" "$1/project.pbxproj"
+}
+
+IDXV=$(vec Index)
+is "the arena is named from the project's path" \
+    "$HOME/Library/Developer/Xcode/DerivedData/Index-ajdfilhsqpwpewcxglwmswjrwuaf/Index.noindex/DataStore" \
+    "$(idx_arena "$IDXV")"
+# The name is the project's own name and twenty-eight letters, so a rule that
+# got the length or the alphabet wrong could not produce the string above.  This
+# says so of the name rather than of the string, which is the part that is a
+# rule and not a constant.
+is "the arena's leaf is the project's name" "Index" \
+    "$(printf '%s' "$(idx_arena "$IDXV")" | sed -n 's|.*/\([A-Za-z]*\)-[a-z]\{28\}/Index.noindex/DataStore$|\1|p')"
+is "followed by twenty-eight letters" 28 \
+    "$(printf '%s' "$(idx_arena "$IDXV")" | sed -n 's|.*/[A-Za-z]*-\([a-z]*\)/Index.noindex/DataStore$|\1|p' | tr -d '\n' | wc -c | tr -d ' ')"
+
+# The field and the argument are the same string, so a record that shortened one
+# and not the other would be answered by a caller that looked at either.
+is "the unit output argument is the outputFilePath field" \
+    "$(idx_ofp "$IDXV")" "$(idx_unit "$IDXV")"
+# What comes off the front is the object root and nothing else, checked against
+# the settings rather than against a path written out here: the object directory
+# is the configuration's own temporary directory, and the target's build
+# directory hangs off it.
+is "the object path is reported relative to the object root" \
+    "$(setting "$IDXV" CONFIGURATION_TEMP_DIR -configuration Debug | sed "s|^$(setting "$IDXV" OBJROOT -configuration Debug)||")/hello.build/Objects-normal/$(setting "$IDXV" ARCHS -configuration Debug)/main.o" \
+    "$(idx_ofp "$IDXV")"
+
+# The scheme, and not the project's own default, is what chose Debug here: the
+# fixture asks for Release by default, and a Release build indexes nothing.  If
+# the default had been read, the arena above would not be there.
+is "the fixture does ask for Release by default" 2 \
+    "$(grep -c 'defaultConfigurationName = Release;' "$IDXV/project.pbxproj")"
+
+RELV=$(vec Release)
+vec_release "$RELV"
+is "a Release build names no arena" "" "$(idx_arena "$RELV")"
+is "and passes no unit output" "" "$(idx_unit "$RELV")"
+is "and reports the whole object path" \
+    "$(setting "$RELV" CONFIGURATION_TEMP_DIR -configuration Release)/hello.build/Objects-normal/$(setting "$RELV" ARCHS -configuration Release)/main.o" \
+    "$(idx_ofp "$RELV")"
+
+# The setting outranks the configuration in both directions, which is what says
+# the two are one rule and not two: NO turns off a Debug build, and YES turns on
+# a Release one.
+NOV=$(vec NoIndex)
+vec_enable "$NOV" NO
+is "an explicit NO outranks Debug's default" "" "$(idx_arena "$NOV")"
+is "and its object path is whole again" \
+    "$(setting "$NOV" CONFIGURATION_TEMP_DIR -configuration Debug)/hello.build/Objects-normal/$(setting "$NOV" ARCHS -configuration Debug)/main.o" \
+    "$(idx_ofp "$NOV")"
+
+YESV=$(vec YesRelease)
+vec_release "$YESV"
+vec_enable "$YESV" YES
+is "an explicit YES outranks Release's default" \
+    "$HOME/Library/Developer/Xcode/DerivedData/YesRelease-cqdgkkcnfcmubiayuppjmovzthnz/Index.noindex/DataStore" \
+    "$(idx_arena "$YESV")"
+
+# The name is a function of the path alone.  Switching the setting off and on
+# again on the same project gives back the same name, so the name is not
+# carrying the setting, the configuration, or the fact that anything indexed
+# here before.
+vec_enable "$IDXV" NO
+is "a project told not to index names no arena" "" "$(idx_arena "$IDXV")"
+vec_enable "$IDXV" ""
+is "and told nothing it names the same one as before" \
+    "$HOME/Library/Developer/Xcode/DerivedData/Index-ajdfilhsqpwpewcxglwmswjrwuaf/Index.noindex/DataStore" \
+    "$(idx_arena "$IDXV")"
+
+rm -rf "$VEC"
+
+# --- what the arena is named after ------------------------------------------
+#
+# Two more things about the name, each of which a rule that stopped at the first
+# case would get wrong.
+#
+# A name may hold a dot of its own, and only the extension is taken off the end:
+# a project called My.Proj is filed as My.Proj-<letters> and not as
+# My-<letters>.  The letters are over the whole path either way, so this is only
+# ever visible in the name in front of them, which is why it needs saying.
+DOTV=/tmp/idetools-index-arena-dot
+rm -rf "$DOTV"
+mkdir -p "$DOTV"
+cp -R "$ROOT/tests/fixtures/Sources.xcodeproj" "$DOTV/My.Proj.xcodeproj"
+cp -R "$ROOT/tests/fixtures/src" "$DOTV/src"
+is "a dot in the project's own name is kept" "My.Proj" \
+    "$(printf '%s' "$(idx_arena "$DOTV/My.Proj.xcodeproj")" | sed -n 's|.*/\(.*\)-[a-z]\{28\}/Index.noindex/DataStore$|\1|p')"
+
+# A -derivedDataPath is a store of its own and is used as it stands, with no
+# project-named level inside it: the per-project directory belongs to the default
+# root, where one project has to be told from another, and an explicit path has
+# already been told.
+is "a -derivedDataPath is the store itself" "/tmp/idetools-ddpath/Index.noindex/DataStore" \
+    "$(idx "$ROOT/tests/fixtures/Sources.xcodeproj" -derivedDataPath /tmp/idetools-ddpath |
+        tr -d ' ",' | sed -n '/^-index-store-path$/{n;p;}')"
+
+rm -rf "$DOTV"
+
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

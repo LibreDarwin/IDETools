@@ -174,5 +174,53 @@ cmp_case "-arch ignored"                 -project "$P" -showBuildSettingsForInde
 cmp_case "-alltargets with a target"     -project "$P" -showBuildSettingsForIndex -alltargets -target xcodebuild
 cmp_case "-alltargets with a target json" -project "$P" -showBuildSettingsForIndex -json -alltargets -target xcodebuild
 
+# --- where the store is filed ------------------------------------------------
+# The two arguments name a directory under DerivedData, and both of the ways
+# that directory can be named are rules rather than constants: it carries the
+# project's own name, and under a -derivedDataPath there is no per-project level
+# at all.  Neither is visible in the fixtures above, whose projects are all
+# named plainly and are all asked for without one, so they are asked for here.
+# The dotted name is a copy rather than a fixture of its own, since the only
+# thing that makes it interesting is the dot.  It brings its source file with
+# it: a source that is not on disk is answered with an empty record, and an
+# empty record names no store at all, which would make the case pass whatever
+# the answer was.
+DOTDIR=/tmp/idetools-parity-dot
+DOT=$DOTDIR/My.Proj.xcodeproj
+DDP=/tmp/idetools-parity-dd
+rm -rf "$DOTDIR" "$DDP"
+mkdir -p "$DOTDIR"
+cp -R "$FIX/Sources.xcodeproj" "$DOT"
+cp -R "$FIX/src" "$DOTDIR/src"
+if [ -d "$DOT" ]; then
+  cmp_case "dotted project name"      -project "$DOT" -showBuildSettingsForIndex
+  cmp_case "dotted project name json" -project "$DOT" -showBuildSettingsForIndex -json
+fi
+
+# The -derivedDataPath cases are compared on the store alone rather than on the
+# whole answer, and the reason is the other argument.  Apple's -ivfsstatcache
+# names a file under the given path whether or not that directory exists -- it
+# computes the name, and never creates it -- while ours can only find the name
+# by looking for the file in the directory, so it has nothing to say about a
+# store that has not been built into yet.  That is a separate answer, about the
+# SDK's own cache rather than about the index store, and it predates and is
+# wider than the naming rule pinned here.  Comparing the whole answer would fail
+# on that one argument and say nothing about this one; comparing the argument
+# after the flag keeps the rule pinned without quietly widening the scope.
+cmp_store() {
+  label="$1"; shift
+  o=$("$ORACLE" "$@" 2>/dev/null | tr -d ' ",' | sed -n '/^-index-store-path$/{n;p;}')
+  m=$("$MINE"   "$@" 2>/dev/null | tr -d ' ",' | sed -n '/^-index-store-path$/{n;p;}')
+  if [ -n "$o" ] && [ "$o" = "$m" ]; then
+    pass=$((pass+1)); printf 'PASS  %s\n' "$label"
+  else
+    fail=$((fail+1)); printf 'FAIL  %s\n    oracle| %s\n    mine  | %s\n' \
+      "$label" "$o" "$m"
+  fi
+}
+cmp_store "-derivedDataPath store"      -project "$FIX/Sources.xcodeproj" -showBuildSettingsForIndex -derivedDataPath "$DDP"
+cmp_store "-derivedDataPath store json" -project "$FIX/Sources.xcodeproj" -showBuildSettingsForIndex -json -derivedDataPath "$DDP"
+rm -rf "$DOTDIR" "$DDP"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

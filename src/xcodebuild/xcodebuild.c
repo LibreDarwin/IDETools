@@ -1009,7 +1009,7 @@ static void md5_block(uint32_t h[4], const uint8_t block[64])
 	h[3] += d;
 }
 
-static void md5_hex(const void *data, size_t len, char *out /* 33 bytes */)
+void md5_digest(const void *data, size_t len, uint8_t out[16])
 {
 	const uint8_t *p = data;
 	uint32_t h[4] = { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476 };
@@ -1040,22 +1040,29 @@ static void md5_hex(const void *data, size_t len, char *out /* 33 bytes */)
 
 	/*
 	 * The digest is the four state words serialized little-endian, so
-	 * "%08x%08x%08x%08x" over the words is the byte-reverse of the real
+	 * taking "%08x" over the words would be the byte-reverse of the real
 	 * digest -- a plausible-looking wrong hash, not an obvious failure.
-	 * Take the bytes lowest-first out of each word, then hex them: the
-	 * caller wants a lowercase hex string for a filename, not the raw
-	 * 16 bytes.
+	 * Take the bytes lowest-first out of each word, which is the order
+	 * they were accumulated in.
 	 */
 	for (i = 0; i < 4; i++) {
 		uint32_t v = h[i];
 		size_t b;
 
-		for (b = 0; b < 4; b++) {
-			unsigned byte = (v >> (8 * b)) & 0xff;
+		for (b = 0; b < 4; b++)
+			out[i * 4 + b] = (uint8_t)((v >> (8 * b)) & 0xff);
+	}
+}
 
-			*out++ = "0123456789abcdef"[byte >> 4];
-			*out++ = "0123456789abcdef"[byte & 0xf];
-		}
+static void md5_hex(const void *data, size_t len, char *out /* 33 bytes */)
+{
+	uint8_t digest[16];
+	size_t i;
+
+	md5_digest(data, len, digest);
+	for (i = 0; i < 16; i++) {
+		*out++ = "0123456789abcdef"[digest[i] >> 4];
+		*out++ = "0123456789abcdef"[digest[i] & 0xf];
 	}
 	*out = '\0';
 }
