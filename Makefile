@@ -111,14 +111,14 @@ XCINDEXTEST_OBJS := $(OBJDIR)/xcindex-test.o $(OBJDIR)/project.o \
 LOADER := $(BUILD_DIR)/libxcodebuildLoader.dylib
 LOADER_OBJS := $(OBJDIR)/xcodebuildLoader.o
 
-# Every object below is reached: the five xcodebuild/ files are the tool
+# Every object below is reached: the six xcodebuild/ files are the tool
 # itself, and the four common/ files are the SDK/toolchain locator, the
 # Developer-dir resolver, the property-list reader both of them consult, and
 # a path helper.
 # Reading a plist goes through CoreFoundation, which the tool already links,
 # so there is no parser here.
 XCODEBUILD_OBJS := $(OBJDIR)/xcodebuild.o $(OBJDIR)/build.o $(OBJDIR)/project.o \
-		   $(OBJDIR)/settings.o $(OBJDIR)/ini.o
+		   $(OBJDIR)/settings.o $(OBJDIR)/ini.o $(OBJDIR)/index.o
 COMMON_OBJS     := $(OBJDIR)/cfplist.o $(OBJDIR)/devpath.o $(OBJDIR)/sdkpath.o \
 		   $(OBJDIR)/xcpath.o
 
@@ -166,6 +166,11 @@ $(OBJDIR)/settings.o: src/xcodebuild/settings.c src/xcodebuild/xcodebuild.h \
 $(OBJDIR)/ini.o: src/xcodebuild/ini.c src/xcodebuild/ini.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/ini.c
+
+$(OBJDIR)/index.o: src/xcodebuild/index.c src/xcodebuild/xcodebuild.h \
+                    src/xcodebuild/project.h src/common/cfplist.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ src/xcodebuild/index.c
 
 $(OBJDIR)/xcindex-test.o: src/xcindex-test/xcindex-test.c src/xcindex-test/xcindex-help.h \
                            src/xcodebuild/project.h src/common/xcpath.h

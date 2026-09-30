@@ -151,6 +151,7 @@ typedef struct {
 	int verbose;
 	int dry_run;
 	int show_build_settings;
+	int show_build_settings_for_index;
 	int show_sdks;
 	int export_archive;
 	int show_buildable_products;
@@ -183,6 +184,15 @@ char *xbuild_get_developer_path(void);
 /* Resolve a short SDK name from a -sdk argument / environment / defaults. */
 const char *xbuild_resolve_sdk_name(const xcodebuild_opts *opts, const char *devpath);
 const char *xbuild_resolve_toolchain_name(const xcodebuild_opts *opts, const char *devpath, const char *sdkname);
+
+/* The project the options select: -project, else a scheme's project, else the
+ * one .xcodeproj in the working directory.  A malloc'd path the caller frees,
+ * or NULL when there is none. */
+char *xbuild_detect_project(const xcodebuild_opts *opts);
+
+/* index.c -- -showBuildSettingsForIndex: every source file's compile settings,
+ * as the index service asks for them. */
+int xcodebuild_emit_index_settings(const xcodebuild_opts *opts, const char *devpath);
 
 /* build.c -- compile and link a target's sources. */
 settings_table *xbuild_settings_for_target(const xcodebuild_opts *opts,

@@ -224,6 +224,7 @@ static void usage(FILE *fp, int code)
 	      "  -pretty                      pretty-print JSON\n"
 	      "  -list                        list project information\n"
 	      "  -showBuildSettings           print build settings\n"
+	      "  -showBuildSettingsForIndex   display build settings for the index service\n"
 	      "  -showsdks                    list available SDKs\n"
 	      "  -showBuildableProducts       list buildable products\n"
 	      "  -exportArchive               export an archive\n"
@@ -449,6 +450,11 @@ static char *detect_project(const xcodebuild_opts *opts, const char *project_dir
 	}
 	closedir(d);
 	return found;
+}
+
+char *xbuild_detect_project(const xcodebuild_opts *opts)
+{
+	return detect_project(opts, (opts != NULL) ? opts->project_dir : NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2253,6 +2259,8 @@ static xcodebuild_opts *parse_args(int argc, char **argv)
 			opts->list_targets = 1;
 		else if (strcmp(key, "-showBuildSettings") == 0)
 			opts->show_build_settings = 1;
+		else if (strcmp(key, "-showBuildSettingsForIndex") == 0)
+			opts->show_build_settings_for_index = 1;
 		else if (strcmp(key, "-showsdks") == 0)
 			opts->show_sdks = 1;
 		else if (strcmp(key, "-showBuildableProducts") == 0)
@@ -2642,6 +2650,9 @@ int main(int argc, char **argv)
 
 	if (opts->show_build_settings)
 		return emit_build_settings(opts, devpath);
+
+	if (opts->show_build_settings_for_index)
+		return xcodebuild_emit_index_settings(opts, devpath);
 
 	if (opts->show_buildable_products) {
 		settings_table *t = resolve_settings(opts, devpath);

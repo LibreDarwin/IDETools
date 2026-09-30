@@ -15,6 +15,7 @@
 		FE0000000000000000000006 /* devpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000016 /* devpath.c */; };
 		FE0000000000000000000007 /* sdkpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000017 /* sdkpath.c */; };
 		FE0000000000000000000008 /* cfplist.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000025 /* cfplist.c */; };
+		FE00000000000000000000A01 /* index.c in Sources */ = {isa = PBXBuildFile; fileRef = FE00000000000000000000A02 /* index.c */; };
 		FE0000000000000000000009 /* xcpath.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000027 /* xcpath.c */; };
 		FE000000000000000000000B /* xcodebuildLoader.c in Sources */ = {isa = PBXBuildFile; fileRef = FE0000000000000000000022 /* xcodebuildLoader.c */; };
 /* End PBXBuildFile section */
@@ -25,6 +26,7 @@
 		FE0000000000000000000013 /* project.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = project.c; sourceTree = "<group>"; };
 		FE0000000000000000000014 /* settings.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = settings.c; sourceTree = "<group>"; };
 		FE0000000000000000000015 /* ini.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ini.c; sourceTree = "<group>"; };
+		FE00000000000000000000A02 /* index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = index.c; sourceTree = "<group>"; };
 		FE0000000000000000000016 /* devpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = devpath.c; sourceTree = "<group>"; };
 		FE0000000000000000000017 /* sdkpath.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sdkpath.c; sourceTree = "<group>"; };
 		FE0000000000000000000025 /* cfplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = cfplist.c; sourceTree = "<group>"; };
@@ -95,6 +97,7 @@
 				FE0000000000000000000013 /* project.c */,
 				FE0000000000000000000014 /* settings.c */,
 				FE0000000000000000000015 /* ini.c */,
+				FE00000000000000000000A02 /* index.c */,
 				FE000000000000000000001B /* xcodebuild.h */,
 				FE000000000000000000001C /* project.h */,
 				FE000000000000000000001D /* ini.h */,
@@ -203,6 +206,7 @@
 				FE0000000000000000000007 /* sdkpath.c in Sources */,
 				FE0000000000000000000008 /* cfplist.c in Sources */,
 				FE0000000000000000000009 /* xcpath.c in Sources */,
+				FE00000000000000000000A01 /* index.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
