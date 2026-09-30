@@ -1415,15 +1415,34 @@ static settings_table *settings_for(const xcodebuild_opts *opts,
 			 * as the .xcodeproj argument verbatim made all
 			 * 31 of those relative where Apple's are absolute,
 			 * which is the single largest source of differing
-			 * lines in -showBuildSettings.  The path need not
-			 * exist for this: xc_abspath() resolves "."
-			 * and ".." textually rather than touching the
-			 * filesystem, so a build directory that has not
-			 * been created yet still gets a settled name.
+			 * lines in -showBuildSettings.
+			 *
+			 * Settled first, because the path is not always
+			 * written the way Apple will report it.  A project
+			 * named through a symlink, or through the /private
+			 * form that realpath and pwd -P produce, is answered
+			 * by Apple as the one short spelling of that place:
+			 * asked for /tmp/link/Proj.xcodeproj where link is a
+			 * link, it reports SRCROOT = /tmp/real, and this is
+			 * true of -showBuildSettings as much as of the index
+			 * path.  xc_canonpath() is that settling, and it
+			 * needs the path to exist; when it cannot be settled
+			 * the path is taken as given, which is what the
+			 * absolutisation below then handles.  That
+			 * absolutisation stays even so, because the settled
+			 * path is not the only one that reaches here -- a
+			 * project named relative is not resolved by realpath
+			 * into anything else, and a path that does not exist
+			 * is never resolved at all.
 			 */
 			char dir[PATH_MAX];
+			char canon[PATH_MAX];
+			const char *base =
+			    xc_canonpath(project, canon, sizeof(canon));
 
-			if (xc_dirname(project, dir, sizeof(dir)) == NULL ||
+			if (base == NULL)
+				base = project;
+			if (xc_dirname(base, dir, sizeof(dir)) == NULL ||
 			    xc_abspath(dir, dir, sizeof(dir)) == NULL)
 				snprintf(sr, sizeof(sr), ".");
 			else

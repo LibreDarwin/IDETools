@@ -2277,7 +2277,24 @@ xcindex_target_sources(const char *project, const char *target,
 	if (project == NULL || target == NULL)
 		return 0;
 
-	snprintf(base, sizeof(base), "%s", project);
+	/*
+	 * The paths that come out of here stand in for the project's files in
+	 * the record, and Apple writes them under the one spelling of the
+	 * project's location -- the same settling that names SRCROOT and the
+	 * arena.  A project asked for through a symlink or through the
+	 * /private form realpath reports is answered with the short path's
+	 * files, so the settling has to happen before the directory is taken:
+	 * taken first, the symlink's own name is baked into every source path
+	 * and survives the settling that only ever sees the project.
+	 */
+	{
+		char canon[PATH_MAX];
+		const char *settled = xc_canonpath(project, canon,
+		    sizeof(canon));
+
+		snprintf(base, sizeof(base), "%s",
+		    settled != NULL ? settled : project);
+	}
 	root = project_load_pbxproj(base);
 	if (root == NULL)
 		return 0;

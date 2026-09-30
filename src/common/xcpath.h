@@ -45,4 +45,31 @@ const char *xc_dirname(const char *path, char *buf, size_t len);
  */
 const char *xc_abspath(const char *path, char *buf, size_t len);
 
+/**
+ * @func xc_canonpath -- the one spelling of a path Xcode settles on
+ * @arg path - the path to settle
+ * @arg buf - storage for the result
+ * @arg len - size of @arg buf
+ *
+ * Symlinks are followed and a leading /private is taken back off, which
+ * together turn every way of naming one place into a single string.  It is
+ * what Xcode uses wherever a path it was given becomes a path it reports
+ * back: a project's SRCROOT, and the name it files the project's arena
+ * under.  Asked for one project through a symlink, through the /private
+ * form realpath reports, and through the short form, Apple answers with one
+ * SRCROOT and one arena, and it is the short form's -- so neither the link's
+ * own name nor the /private long form survives into an answer.
+ *
+ * Unlike xc_abspath(), this does consult the filesystem: the path has to
+ * exist to be resolved, and it is the caller that decides what to do when it
+ * does not.  A caller with a fallback should use it, since a name is better
+ * than none; a caller that needs the settled form should treat NULL as
+ * "cannot be settled" rather than "the path is empty".
+ *
+ * @return: @arg buf, always NUL-terminated, or NULL if @arg path is NULL,
+ *          @arg buf is NULL, @arg path does not resolve, or the result does
+ *          not fit.
+ */
+const char *xc_canonpath(const char *path, char *buf, size_t len);
+
 #endif /* _XCODE_TOOLS_XCPATH_H_ */

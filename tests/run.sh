@@ -1367,6 +1367,18 @@ idx_unit() {
 }
 idx_ofp() { idx_rec "$1" main.c | sed -n 's/^outputFilePath = //p'; }
 
+# idx_srckey <project> [extra args...] -> the path a source's record is keyed by,
+# which is the source's own absolute path.  Read from the -json form, where a
+# source is a line of its own at four spaces and the target above it sits at two,
+# so the four-space rule cannot mistake the target's name for a source.  This is
+# the source path as the record writes it, which is what says whether it was
+# settled the way SRCROOT is.
+idx_srckey() {
+	_p=$1; shift
+	"$TOOL" -project "$_p" -showBuildSettingsForIndex -json "$@" 2>/dev/null |
+	    sed -n 's/^    "\(.*\)" : {$/\1/p' | head -1
+}
+
 # vec_release <project> -- point the scheme's launch action at Release, which is
 # the configuration an index build reads.  A -configuration on the command line
 # will not do it: this build answers from the project, as the expectations
@@ -1494,6 +1506,66 @@ is "a -derivedDataPath is the store itself" "/tmp/idetools-ddpath/Index.noindex/
         tr -d ' ",' | sed -n '/^-index-store-path$/{n;p;}')"
 
 rm -rf "$DOTV"
+
+# --- the path the name is computed from --------------------------------------
+#
+# The project's own path is not what gets hashed.  What gets hashed is that path
+# with symlinks followed and a leading /private taken off, and these say so
+# without saying how: each asks for one store twice, through two spellings of
+# the same place, and expects one answer.  A rule that hashed the path as given
+# would answer twice and disagree with itself, which is the whole content.
+#
+# The base is under /private on purpose.  /tmp is a symlink to /private/tmp and
+# /var to /private/var, so a base under /private is the one spelling that has
+# both a /private form and a short form to be asked for -- and it is a real
+# directory in its own right, so the project under it can be read either way.
+SYM=/private/tmp/idetools-index-arena-sym
+rm -rf "$SYM" /tmp/idetools-index-arena-sym
+mkdir -p "$SYM/real"
+cp -R "$ROOT/tests/fixtures/Sources.xcodeproj" "$SYM/real/Proj.xcodeproj"
+cp -R "$ROOT/tests/fixtures/src" "$SYM/real/src"
+ln -s "$SYM/real" "$SYM/link"
+
+is "a symlink to the project names the same store" \
+    "$(idx_arena "$SYM/real/Proj.xcodeproj")" \
+    "$(idx_arena "$SYM/link/Proj.xcodeproj")"
+
+# The short form of the same place.  Skipped where there is no such form to ask
+# for, which is the honest reason to skip: /tmp not being a link to /private/tmp
+# would leave nothing to compare.
+if [ -d /tmp/idetools-index-arena-sym/real ]; then
+  is "a /private path names the same store as its short form" \
+      "$(idx_arena /tmp/idetools-index-arena-sym/real/Proj.xcodeproj)" \
+      "$(idx_arena "$SYM/real/Proj.xcodeproj")"
+fi
+
+# The name is not the only thing computed from the project's path.  SRCROOT is
+# the path the rest of the settings hang off, and a source's record is keyed by
+# its own path under SRCROOT, and Apple settles both the same way -- so a rule
+# that settled only the name would put the arena and the paths inside it in
+# different places, which is a disagreement this would not have caught.  Each
+# pair asks the same question of one of the other two and expects one answer.
+is "SRCROOT is settled through a symlink too" \
+    "$(setting "$SYM/real/Proj.xcodeproj" SRCROOT)" \
+    "$(setting "$SYM/link/Proj.xcodeproj" SRCROOT)"
+is "a source key is settled through a symlink too" \
+    "$(idx_srckey "$SYM/real/Proj.xcodeproj")" \
+    "$(idx_srckey "$SYM/link/Proj.xcodeproj")"
+
+if [ -d /tmp/idetools-index-arena-sym/real ]; then
+  # The short form itself, written out, and not the other spelling of the same
+  # place: two spellings that both resolve agree whether or not /private came
+  # off, so comparing them would answer for the resolving and not for the
+  # taking-off.  The literal is what pins the taking-off.
+  is "SRCROOT is the short form of a /private path" \
+      "/tmp/idetools-index-arena-sym/real" \
+      "$(setting "$SYM/real/Proj.xcodeproj" SRCROOT)"
+  is "a source key is under the short form too" \
+      "/tmp/idetools-index-arena-sym/real/src/main.c" \
+      "$(idx_srckey "$SYM/real/Proj.xcodeproj")"
+fi
+
+rm -rf "$SYM" /tmp/idetools-index-arena-sym
 
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

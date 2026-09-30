@@ -7,6 +7,7 @@
 
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -134,6 +135,42 @@ xc_abspath(const char *path, char *buf, size_t len)
 		memmove(out + 1, out, n + 1);
 		out[0] = '/';
 	}
+
+	if (snprintf(buf, len, "%s", out) >= (int)len)
+		return NULL;
+	return buf;
+}
+
+const char *
+xc_canonpath(const char *path, char *buf, size_t len)
+{
+	static const char priv[] = "/private";
+	char resolved[PATH_MAX];
+	const char *out = resolved;
+
+	if (path == NULL || buf == NULL || len == 0)
+		return NULL;
+	if (realpath(path, resolved) == NULL)
+		return NULL;
+
+	/*
+	 * Every one of /tmp, /var and /etc is a link into /private, so the
+	 * path the filesystem gives back for any of them is one /private
+	 * away from the one a person would write, and from the one a shell
+	 * reports for `pwd`.  Taking that leading component back off makes
+	 * the two spellings one string again, which is what a name computed
+	 * from the path needs: the same place has to give the same name
+	 * whether it was reached the short way or the long way.
+	 *
+	 * Only a leading /private goes, and only when it is a component of
+	 * its own.  /private, /private/tmp and /tmp all name the same
+	 * directory, and the first two differ by exactly this much; but a
+	 * /private that is somewhere in the middle is part of a name and is
+	 * left alone.
+	 */
+	if (strncmp(resolved, priv, sizeof(priv) - 1) == 0 &&
+	    resolved[sizeof(priv) - 1] == '/')
+		out = resolved + sizeof(priv) - 1;
 
 	if (snprintf(buf, len, "%s", out) >= (int)len)
 		return NULL;

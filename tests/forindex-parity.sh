@@ -187,8 +187,9 @@ cmp_case "-alltargets with a target json" -project "$P" -showBuildSettingsForInd
 # the answer was.
 DOTDIR=/tmp/idetools-parity-dot
 DOT=$DOTDIR/My.Proj.xcodeproj
+SYMDIR=/tmp/idetools-parity-linksym
 DDP=/tmp/idetools-parity-dd
-rm -rf "$DOTDIR" "$DDP"
+rm -rf "$DOTDIR" "$SYMDIR" "$DDP"
 mkdir -p "$DOTDIR"
 cp -R "$FIX/Sources.xcodeproj" "$DOT"
 cp -R "$FIX/src" "$DOTDIR/src"
@@ -196,6 +197,29 @@ if [ -d "$DOT" ]; then
   cmp_case "dotted project name"      -project "$DOT" -showBuildSettingsForIndex
   cmp_case "dotted project name json" -project "$DOT" -showBuildSettingsForIndex -json
 fi
+
+# The same project asked for through a symlink to its own directory, and through
+# the /private form of the path realpath reports.  All three of these are one
+# place, and the store is one store; the two spellings are here because a path
+# that has been through realpath, pwd -P or a directory service is the /private
+# one, and that is the spelling a caller most often has.
+ln -s "$DOTDIR" "$SYMDIR" 2>/dev/null
+if [ -d "$SYMDIR/My.Proj.xcodeproj" ]; then
+  cmp_case "project through a symlink"      -project "$SYMDIR/My.Proj.xcodeproj" -showBuildSettingsForIndex
+  cmp_case "project through a symlink json" -project "$SYMDIR/My.Proj.xcodeproj" -showBuildSettingsForIndex -json
+fi
+PRIVDIR=/private/tmp/idetools-parity-priv
+rm -rf "$PRIVDIR"
+mkdir -p "$PRIVDIR"
+cp -R "$FIX/Sources.xcodeproj" "$PRIVDIR/Proj.xcodeproj"
+cp -R "$FIX/src" "$PRIVDIR/src"
+if [ -d "$PRIVDIR" ] && [ -d /tmp/idetools-parity-priv ]; then
+  cmp_case "project at its /private path" \
+      -project /tmp/idetools-parity-priv/Proj.xcodeproj -showBuildSettingsForIndex
+  cmp_case "project at its /private path json" \
+      -project /private/tmp/idetools-parity-priv/Proj.xcodeproj -showBuildSettingsForIndex -json
+fi
+rm -rf "$PRIVDIR" "$SYMDIR"
 
 # The -derivedDataPath cases are compared on the store alone rather than on the
 # whole answer, and the reason is the other argument.  Apple's -ivfsstatcache
@@ -220,7 +244,7 @@ cmp_store() {
 }
 cmp_store "-derivedDataPath store"      -project "$FIX/Sources.xcodeproj" -showBuildSettingsForIndex -derivedDataPath "$DDP"
 cmp_store "-derivedDataPath store json" -project "$FIX/Sources.xcodeproj" -showBuildSettingsForIndex -json -derivedDataPath "$DDP"
-rm -rf "$DOTDIR" "$DDP"
+rm -rf "$DOTDIR" "$SYMDIR" "$DDP"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

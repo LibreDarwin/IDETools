@@ -543,24 +543,31 @@ static void index_record_free(index_record *rec)
  *   - each half is 14 letters wide whether or not it needs them, so a small
  *     digest still yields leading 'a's.  Nothing is trimmed.
  *
- * The path hashed is the project as it was named, made absolute and
- * otherwise left alone: it is not resolved through symlinks, so a project
- * reached through a link gets the directory belonging to the link's own
- * path.
+ * The path hashed is the project's settled path, xc_canonpath()'s: symlinks
+ * followed and a leading /private off, so that the link, the /private form
+ * and the short form of one place all give one directory.  It is the same
+ * settling that names the project's SRCROOT, which is why the arena and the
+ * paths inside the records that point at it agree.  A project that cannot be
+ * settled is hashed as it was named, since a name is better than none and
+ * the project is still the one that was asked for.
  */
 static char *derived_data_leaf(const char *project)
 {
 	uint8_t digest[16];
 	char suffix[29];
-	const char *base, *dot;
+	char canon[PATH_MAX];
+	const char *base, *dot, *path;
 	char *out;
 	size_t len;
 	int half, digit;
 
 	if (project == NULL || *project == '\0')
 		return NULL;
-	base = strrchr(project, '/');
-	base = (base != NULL) ? base + 1 : project;
+	path = xc_canonpath(project, canon, sizeof(canon));
+	if (path == NULL)
+		path = project;
+	base = strrchr(path, '/');
+	base = (base != NULL) ? base + 1 : path;
 	/*
 	 * Only the last extension goes: My.Proj.xcodeproj is filed as
 	 * My.Proj-<letters>, not as My-<letters>.  The hash covers the whole
@@ -570,7 +577,7 @@ static char *derived_data_leaf(const char *project)
 	if (dot == NULL || dot == base)
 		dot = base + strlen(base);
 
-	md5_digest(project, strlen(project), digest);
+	md5_digest(path, strlen(path), digest);
 	for (half = 0; half < 2; half++) {
 		uint64_t v = 0;
 
