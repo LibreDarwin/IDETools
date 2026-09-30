@@ -274,17 +274,19 @@ static void object_name(const char *source, char *buf, size_t len)
  * What an index build wrote down about itself.
  *
  * -showBuildSettingsForIndex ignores -configuration and any setting given on
- * the command line, and says so nowhere: IDETools answers with Release, the
- * Sources fixture with Debug, and both name Release as their default
- * configuration and take the same command line.  The difference is not in
- * the projects.  It is that a project Xcode has indexed once has a record of
- * the index build it ran, and that record names the configuration the build
- * used.  Sources has one; IDETools has never been indexed and has none, so
- * it falls back to the project's own default.
+ * the command line, and says so nowhere: the Sources fixture and IDETools
+ * take the same command line and both name Release as their default
+ * configuration, yet the fixture answers Debug and IDETools answers Release.
+ * The difference is the shared scheme, whose LaunchAction says Debug, so
+ * the scheme is what the configuration is read from and the record is not
+ * consulted for it -- a project that has been indexed once still follows
+ * its scheme.
  *
- * So the record is read rather than guessed at.  It also carries the arena's
- * data-store path, which is where -index-store-path comes from and why one
- * project has that argument and another does not.
+ * What the record is read for is the arena.  It carries the data-store
+ * path, which is where -index-store-path comes from and why one project
+ * has that argument and another does not, and it lives in DerivedData under
+ * a key derived from the project's path, so a project is only ever found to
+ * have one once something has indexed it there.
  */
 typedef struct {
 	char *configuration;	/* the configuration the index build used */
@@ -1100,6 +1102,7 @@ int xcodebuild_emit_index_settings(const xcodebuild_opts *opts,
 	index_record rec;
 	char **names = NULL, **guids = NULL;
 	char *project;
+	char scheme[256];
 	int n, first = 1;
 	int indent = opts->json ? 2 : 0;
 
@@ -1133,13 +1136,23 @@ int xcodebuild_emit_index_settings(const xcodebuild_opts *opts,
 	index_record_load(opts, project, &rec);
 
 	/*
-	 * An index build answers from the project and the record, not from
-	 * the command line: Apple ignores -configuration, -sdk and KEY=VALUE
-	 * here, so the copy is stripped of them.  The configuration the
-	 * record names outranks all of that; with no record the project's own
-	 * default stands.
+	 * An index build answers from the project, not from the command line:
+	 * Apple ignores -configuration, -sdk and KEY=VALUE here, so the copy is
+	 * stripped of them.
+	 *
+	 * The configuration comes from the project's shared scheme, which
+	 * outranks both the record of an earlier index build and the project's
+	 * own defaultConfigurationName; a project with no shared scheme falls
+	 * back to the record, and one with neither falls back to its default.
+	 * The scheme has to be consulted first, or the answer depends on
+	 * whether anything has ever indexed this project at this path: the
+	 * record is kept in DerivedData under a key derived from the project's
+	 * path, so the same project at a new path would answer differently.
 	 */
-	effective.configuration = rec.configuration;
+	if (project_scheme_configuration(project, scheme, sizeof(scheme)) != NULL)
+		effective.configuration = scheme;
+	else
+		effective.configuration = rec.configuration;
 	effective.sdk = NULL;
 	effective.overrides = NULL;
 	effective.n_overrides = 0;

@@ -62,6 +62,12 @@ CFTypeRef project_find_project_buildsettings(CFTypeRef root,
 const char *project_default_configuration(CFTypeRef root, char *buf,
                                           size_t len);
 
+/* The configuration the project's first shared scheme's LaunchAction names,
+ * or NULL when the project has no shared scheme.  Outranks both the default
+ * above and the record of an earlier index build. */
+const char *project_scheme_configuration(const char *project, char *buf,
+                                          size_t len);
+
 /* The productType of a target (the first, when target is NULL). */
 void project_target_product_type(CFTypeRef root, const char *target,
                                  char *buf, size_t len);

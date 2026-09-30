@@ -837,6 +837,76 @@ scheme_file(const char *project, const char *scheme, char *out, size_t len)
 }
 
 /*
+ * The configuration a build uses when the project has shared schemes: the
+ * buildConfiguration of the first scheme's LaunchAction.
+ *
+ * -showBuildSettingsForIndex takes the configuration from the scheme, and
+ * the scheme outranks both the project's own defaultConfigurationName and
+ * the record of an earlier index build.  The Sources fixture names Release
+ * as its default and keeps a shared scheme whose LaunchAction says Debug,
+ * and answers Debug; a project Xcode has already indexed once still
+ * follows its scheme, so editing the scheme edits the answer even while
+ * the record is sitting in DerivedData.
+ *
+ * Schemes are taken in name order and the first one decides: with
+ * AAA.xcscheme and ZZZ.xcscheme disagreeing it is AAA, and writing ZZZ
+ * into the directory first does not change that.  xcschememanagement.plist
+ * does not override the choice.  LaunchAction alone is read -- moving the
+ * configuration on TestAction, AnalyzeAction, ProfileAction,
+ * ArchiveAction or BuildAction leaves the answer alone.
+ *
+ * NULL when the project has no shared scheme, which is the case that leaves
+ * the caller to the record and the project's default.
+ */
+const char *
+project_scheme_configuration(const char *project, char *buf, size_t len)
+{
+	char dir[PATH_MAX], path[PATH_MAX], first[256];
+	const char *action, *action_end;
+	struct dirent *e;
+	size_t tlen;
+	char *text;
+	DIR *d;
+
+	if (project == NULL || buf == NULL || len == 0)
+		return NULL;
+
+	snprintf(dir, sizeof(dir), "%s/xcshareddata/xcschemes", project);
+	if ((d = opendir(dir)) == NULL)
+		return NULL;
+
+	/* readdir order is the order the files were written, which is not
+	 * the order Xcode picks them in, so the name has to be compared. */
+	first[0] = '\0';
+	while ((e = readdir(d)) != NULL) {
+		if (!endswith(e->d_name, ".xcscheme"))
+			continue;
+		if (first[0] != '\0' && strcmp(e->d_name, first) >= 0)
+			continue;
+		snprintf(first, sizeof(first), "%s", e->d_name);
+	}
+	closedir(d);
+
+	if (first[0] == '\0')
+		return NULL;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, first);
+	if ((text = file_read_all(path, &tlen)) == NULL)
+		return NULL;
+
+	action = strstr(text, "<LaunchAction");
+	action_end = (action != NULL) ? strstr(action, "</LaunchAction>") : NULL;
+	if (action_end == NULL)
+		action_end = text + tlen;
+
+	if (xml_attr(action, action_end, "buildConfiguration", buf, len) == NULL)
+		buf[0] = '\0';
+	free(text);
+
+	return buf[0] != '\0' ? buf : NULL;
+}
+
+/*
  * The targets a scheme builds, in the order it lists them.
  *
  * Only the build action counts: the other actions name what to run and
