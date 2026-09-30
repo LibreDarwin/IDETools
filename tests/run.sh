@@ -1259,11 +1259,71 @@ is "-json names each target once, in order by name" \
     "$(printf '%s\n%s\n' "$tgt_lib" "$tgt_tool" | sort | paste -sd' ' -)" \
     "$(idx "$PROJ" -alltargets -json | sed -n 's/^  "\(.*\)" : {$/\1/p' | paste -sd' ' -)"
 
-# A target whose sources are all absent gets a blank object, not {}.  The Two
+# A target with no files on disk is a blank object, not {}.  The Two
 # fixture's files are not on disk, which is the case: a record that cannot be
 # filled is left empty rather than invented.
 is "a target with no files on disk is a blank object" \
     "$(printf '{\n\n}')" "$(idx "$ROOT/tests/fixtures/Two.xcodeproj" -target hello)"
+
+# --- a target named more than once -----------------------------------------
+#
+# Each -target is a request of its own and gets a block of its own, in the
+# order they were named.  Answering the pair once would make the second name
+# unreachable, which is the whole content of a repeatable option.
+TWO=$ROOT/tests/fixtures/Two.xcodeproj
+named() { sed -n 's/^  "\(.*\)" : {$/\1/p'; }
+
+is "two -target are answered as two blocks" 2 \
+    "$(idx_walk "$TWO" -target hello -target world | awk 'END { print NR }')"
+is "in the order they were named" "hello world" \
+    "$(idx_walk "$TWO" -target hello -target world | paste -sd' ' -)"
+is "and -json names each one" "hello world" \
+    "$(idx "$TWO" -json -target hello -target world | named | paste -sd' ' -)"
+# Asked twice for the same target, the console form answers twice -- the
+# blocks are the answer and both were asked for -- while -json answers once,
+# because a repeated key is not a thing a JSON object can hold.
+is "a repeated -target is answered twice in the console form" 2 \
+    "$(idx_walk "$TWO" -target hello -target hello | awk 'END { print NR }')"
+is "and once in -json" "hello" \
+    "$(idx "$TWO" -json -target hello -target hello | named | paste -sd' ' -)"
+
+# --- a target the project does not have ------------------------------------
+#
+# The refusal is checked with -json, where nothing at all is printed before it:
+# an object whose brace was opened and then abandoned would be a parse error
+# in whatever reads the answer.  So the emptiness is part of what is being
+# tested, not an incidental part of how the message is delivered.
+"$TOOL" -project "$TWO" -showBuildSettingsForIndex -json \
+    -target hello -target nope >/tmp/idetools-forindex-out \
+    2>/tmp/idetools-forindex-err
+fi_rc=$?
+fi_out=$(cat /tmp/idetools-forindex-out)
+fi_err=$(cat /tmp/idetools-forindex-err)
+
+is "a target the project lacks is refused" 65 "$fi_rc"
+is "and nothing is answered for the one it does have" "" "$fi_out"
+is "and the refusal names the target that was asked for" \
+    "xcodebuild: error: The project '$TWO' does not contain a target named 'nope'." \
+    "$fi_err"
+# The project is named the way the command line named it, because that is the
+# only form of the name the caller can recognise.  Asked with a relative path,
+# it comes back relative.
+is "and the project is named as the command line named it" \
+    "xcodebuild: error: The project 'tests/fixtures/Two.xcodeproj' does not contain a target named 'nope'." \
+    "$("$TOOL" -project tests/fixtures/Two.xcodeproj -showBuildSettingsForIndex \
+        -target nope 2>&1 >/dev/null)"
+
+# An empty -target is a request for a target named nothing, and there is no
+# such target.  Answering it with the project's default would be answering a
+# question that was not asked, so it is refused like any other unknown name.
+fi_empty=$("$TOOL" -project "$TWO" -showBuildSettingsForIndex -target '' 2>&1 >/dev/null)
+fi_empty_rc=0
+"$TOOL" -project "$TWO" -showBuildSettingsForIndex -target '' >/dev/null 2>&1 ||
+    fi_empty_rc=$?
+is "an empty -target is refused rather than defaulted" 65 "$fi_empty_rc"
+is "and is refused as the target it named" \
+    "xcodebuild: error: The project '$TWO' does not contain a target named ''." \
+    "$fi_empty"
 
 echo
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

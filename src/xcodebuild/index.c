@@ -1144,11 +1144,84 @@ int xcodebuild_emit_index_settings(const xcodebuild_opts *opts,
 	effective.overrides = NULL;
 	effective.n_overrides = 0;
 
+	/*
+	 * Every -target is answered separately, in the order they were given,
+	 * and all of them are checked before anything at all is printed.
+	 * Asked for one that exists and one that does not, Apple refuses the
+	 * request and prints nothing -- not even, in -json, the brace that
+	 * would have opened the object -- so a record emitted for the first
+	 * before the refusal would be a difference in what the index service
+	 * was handed.
+	 *
+	 * The project is named as the command line named it: an argument that
+	 * came in relative, or with a trailing slash, or in full, is reported
+	 * the same way, since that is the only form of the name the caller can
+	 * recognise.  Status 65 is Apple's for a request it cannot answer.
+	 */
+	if (project != NULL && opts->n_targets > 0) {
+		char **known = NULL, **known_guids = NULL;
+		int n_known = xcindex_target_list(project, &known,
+		    &known_guids);
+		int unknown = 0;
+
+		for (int i = 0; i < opts->n_targets && !unknown; i++) {
+			int found = 0;
+
+			for (int j = 0; j < n_known; j++) {
+				if (known[j] != NULL &&
+				    strcmp(known[j], opts->targets[i]) == 0) {
+					found = 1;
+					break;
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "xcodebuild: error: The project "
+				    "'%s' does not contain a target named '%s'.\n",
+				    (opts->project != NULL) ?
+				    opts->project : project,
+				    opts->targets[i]);
+				unknown = 1;
+			}
+		}
+		for (int j = 0; j < n_known; j++) {
+			free(known[j]);
+			free(known_guids[j]);
+		}
+		free(known);
+		free(known_guids);
+		if (unknown)
+			return 65;
+	}
+
 	if (opts->json)
 		fputs("{\n", stdout);
 
-	if (opts->target != NULL || !opts->all_targets) {
-		emit_index_target(opts, devpath, project, opts->target, &rec,
+	if (opts->n_targets > 0) {
+		for (int i = 0; i < opts->n_targets; i++) {
+			/*
+			 * A repeated -target is answered once per occurrence in
+			 * the console form, since each is a block of its own,
+			 * and once in -json, since a repeated key is not a
+			 * thing.  The console walk's closing repeat belongs to
+			 * the walk and not here.
+			 */
+			int dup = 0;
+
+			if (opts->json) {
+				for (int j = 0; j < i; j++) {
+					if (strcmp(opts->targets[j],
+					    opts->targets[i]) == 0)
+						dup = 1;
+				}
+			}
+			if (dup)
+				continue;
+			emit_index_target(opts, devpath, project,
+			    opts->targets[i], &rec, &effective, indent, &first);
+		}
+		n = 0;
+	} else if (!opts->all_targets) {
+		emit_index_target(opts, devpath, project, NULL, &rec,
 		    &effective, indent, &first);
 		n = 0;
 	} else {

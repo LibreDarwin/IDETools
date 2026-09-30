@@ -119,6 +119,10 @@ typedef struct {
 	char *build_root;	/* set for a workspace: one place for products */
 	char *scheme;
 	char *target;
+	/* every -target in the order given: each is answered on its own, where
+	 * "target" above keeps only the last for the callers that want one. */
+	char **targets;
+	int n_targets;
 	char *configuration;
 
 	/* toolchain/sdk/arch selection */

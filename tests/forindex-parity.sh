@@ -1,30 +1,29 @@
 #!/bin/sh
 # Compare -showBuildSettingsForIndex against Apple's xcodebuild.
-# The output must match byte for byte once the invocation echo is removed.
+# The output must match byte for byte once the invocation echo is removed, and
+# so must the exit status and the diagnostic.
 #
-# Two things are deliberately out of scope, and both are recorded here rather
-# than left to be discovered:
+# Two things about Apple's own output are normalised away, and only these two:
 #
 #   * The invocation echo.  The console form opens by naming the command it
 #     ran, which names the binary that was run, so ours and Apple's can never
 #     be equal.  It is stripped through the blank line that ends it, which
 #     leaves the per-target headers in place to be compared.
 #
-#   * Exit status and stderr.  A request naming a target the project does not
-#     have is an error in Apple -- status 65, and a diagnostic naming the
-#     target.  This implementation answers it with status 0 and no output at
-#     all, which is a real difference and an unimplemented one.  Comparing
-#     status here would report that on every run and hide any other
-#     difference behind it.
+#   * The result-bundle notice Apple writes to stderr before a refusal, which
+#     carries a timestamp, a process id and a path in a temporary directory.
 #
-#   * A repeated -target.  Apple's usage calls -target repeatable, and given
-#     two of them it answers with both targets' settings.  This path keeps only
-#     the last, so a two-target request gets one target's answer.  The console
-#     engine is not the problem -- -- list-indexables already answers a repeated
-#     -target with both -- so this is the ForIndex path collapsing them on its
-#     own.  Until it is fixed, the case below is left out rather than left
-#     failing: the two-target case would otherwise be the only red line here and
-#     would be read as the others being unverified.
+#   * Apple's own logging on stderr -- the timestamped, process-id-prefixed
+#     "[MT] IDERunDestination:" lines, which some of the fixtures provoke and
+#     which say nothing about the answer.  Every diagnostic that answers the
+#     request is compared; these are the tool talking to itself.
+#
+# The filter is applied to both sides, so that it is a difference in the two
+# tools' own diagnostics that fails a case rather than a difference in whether
+# Xcode felt like logging that morning.
+quiet_apple() {
+  sed -e '/Writing error result bundle/d' -e '/\[MT\]/d'
+}
 #
 # Environment:
 #   MINE     the reimplementation; `make forindex-parity` passes the one it
@@ -32,6 +31,7 @@
 #   XCODE    Apple's xcodebuild, for anyone with Xcode somewhere else
 #   CONFIG   the build directory the default MINE is taken from
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT" || exit 1
 CONFIG=${CONFIG:-release}
 MINE=${MINE:-$ROOT/build/$CONFIG/xcodebuild}
 ORACLE=${XCODE:-/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild}
@@ -61,17 +61,26 @@ strip() {
 
 # cmp_case <label> [args...]
 #
+# stdout and stderr are compared separately rather than merged, because a shell
+# gives the two streams different buffering and a merge would then make the
+# order they were written in part of what is being measured.
+#
 # A failing diff is cut short: a single record is several hundred lines, and a
 # disagreement about one path would otherwise bury every other one.
 cmp_case() {
   label="$1"; shift
-  "$ORACLE" "$@" >/tmp/fi_oo 2>/dev/null; strip </tmp/fi_oo >/tmp/fi_on
-  "$MINE"   "$@" >/tmp/fi_mo 2>/dev/null; strip </tmp/fi_mo >/tmp/fi_mn
-  if cmp -s /tmp/fi_on /tmp/fi_mn; then
+  "$ORACLE" "$@" >/tmp/fi_oo 2>/tmp/fi_oe; orc=$?
+  "$MINE"   "$@" >/tmp/fi_mo 2>/tmp/fi_me; mrc=$?
+  strip </tmp/fi_oo >/tmp/fi_on
+  strip </tmp/fi_mo >/tmp/fi_mn
+  quiet_apple </tmp/fi_oe >/tmp/fi_oen
+  quiet_apple </tmp/fi_me >/tmp/fi_men
+  if [ "$orc" = "$mrc" ] && cmp -s /tmp/fi_on /tmp/fi_mn && cmp -s /tmp/fi_oen /tmp/fi_men; then
     pass=$((pass+1)); printf 'PASS  %s\n' "$label"
   else
-    fail=$((fail+1)); printf 'FAIL  %s\n' "$label"
-    diff /tmp/fi_on /tmp/fi_mn | sed 's/^/    /' | head -12
+    fail=$((fail+1)); printf 'FAIL  %s   rc oracle=%s mine=%s\n' "$label" "$orc" "$mrc"
+    diff /tmp/fi_on  /tmp/fi_mn  | sed 's/^/    out| /' | head -12
+    diff /tmp/fi_oen /tmp/fi_men | sed 's/^/    err| /' | head -12
   fi
 }
 
@@ -107,6 +116,41 @@ if [ -d "$T" ]; then
   cmp_case "two world"          -project "$T" -showBuildSettingsForIndex -target world
   cmp_case "two world json"     -project "$T" -showBuildSettingsForIndex -json -target world
 fi
+
+# --- a target named more than once -----------------------------------------
+# Apple's usage calls -target repeatable, and given two of them it answers
+# with both targets' settings.  One block for the pair would make the second
+# name unreachable.
+cmp_case "two -target"            -project "$T" -showBuildSettingsForIndex -target hello -target world
+cmp_case "two -target json"       -project "$T" -showBuildSettingsForIndex -json -target hello -target world
+cmp_case "two -target reversed"   -project "$T" -showBuildSettingsForIndex -target world -target hello
+cmp_case "the same target twice"  -project "$T" -showBuildSettingsForIndex -target hello -target hello
+cmp_case "the same target 2x json" -project "$T" -showBuildSettingsForIndex -json -target hello -target hello
+cmp_case "three -target"          -project "$T" -showBuildSettingsForIndex -target hello -target world -target hello
+
+# --- a target the project does not have ------------------------------------
+# These are the refusals, and they are compared on all three of stdout, status
+# and the diagnostic.  Asking for one that exists alongside one that does not
+# is the case that says the checking happens first: a record emitted for the
+# first before the refusal would be something the index service could act on.
+cmp_case "no such target"          -project "$T" -showBuildSettingsForIndex -target nope
+cmp_case "no such target json"     -project "$T" -showBuildSettingsForIndex -json -target nope
+cmp_case "no such target quiet"    -project "$T" -showBuildSettingsForIndex -target nope -quiet
+cmp_case "one real, one not"       -project "$T" -showBuildSettingsForIndex -target hello -target nope
+cmp_case "one real, one not json"  -project "$T" -showBuildSettingsForIndex -json -target hello -target nope
+cmp_case "first of three not"      -project "$T" -showBuildSettingsForIndex -target nope -target hello -target world
+cmp_case "no such target, abs path" -project "$T" -showBuildSettingsForIndex -target nope
+# The refusal repeats the project name as the command line gave it, so the form
+# of the path is part of what is compared: the same project asked for two ways
+# is refused two ways.
+cmp_case "no such target, rel path" -project tests/fixtures/Two.xcodeproj -showBuildSettingsForIndex -target nope
+cmp_case "no such target, slash"   -project "$T/" -showBuildSettingsForIndex -target nope
+cmp_case "no such target, alltargets" -project "$P" -showBuildSettingsForIndex -alltargets -target nope
+# An empty name is a name, and there is no target under it.  Answering with a
+# default instead would be answering a question that was not asked.
+cmp_case "empty target name"           -project "$T" -showBuildSettingsForIndex -target ''
+cmp_case "empty target name json"      -project "$T" -showBuildSettingsForIndex -json -target ''
+cmp_case "real name, then empty"       -project "$T" -showBuildSettingsForIndex -target hello -target ''
 
 O=$FIX/Order.xcodeproj
 if [ -d "$O" ]; then

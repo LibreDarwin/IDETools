@@ -137,6 +137,8 @@ void xbuild_opts_free(xcodebuild_opts *o)
 	free(o->overrides);
 	free_strv(o->archs, o->n_archs);
 	free(o->archs);
+	free_strv(o->targets, o->n_targets);
+	free(o->targets);
 	free(o->argv);
 	free(o);
 }
@@ -2295,8 +2297,25 @@ static xcodebuild_opts *parse_args(int argc, char **argv)
 			set_opt(&opts->workspace, consume_value(&i, argc, argv, val));
 		else if (strcmp(key, "-scheme") == 0)
 			set_opt(&opts->scheme, consume_value(&i, argc, argv, val));
-		else if (strcmp(key, "-target") == 0)
-			set_opt(&opts->target, consume_value(&i, argc, argv, val));
+		else if (strcmp(key, "-target") == 0) {
+			const char *tv = consume_value(&i, argc, argv, val);
+			set_opt(&opts->target, tv);
+			/*
+			 * Every -target is kept, an empty name included: Apple
+			 * refuses a request for a target named '' rather than
+			 * falling back to a default, and that refusal is the
+			 * index path's to make.  A NULL value is a -target with
+			 * no argument, which the parser has already refused.
+			 */
+			if (tv != NULL) {
+				char **grow = (char **)realloc(opts->targets,
+				    sizeof(char *) * (opts->n_targets + 1));
+				if (grow != NULL) {
+					opts->targets = grow;
+					opts->targets[opts->n_targets++] = strdup(tv);
+				}
+			}
+		}
 		else if (strcmp(key, "-configuration") == 0)
 			set_opt(&opts->configuration, consume_value(&i, argc, argv, val));
 		else if (strcmp(key, "-sdk") == 0)
